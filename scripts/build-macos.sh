@@ -253,11 +253,18 @@ done
 echo "  ✓ no GPL / non-free / v3 flags"
 
 # Confirm encoders we depend on (string-scan, no execution needed).
+# Capture strings output once and pattern-match without piping into grep -q.
+# (grep -q exits early on match, which causes strings to die on EPIPE; with
+# `set -o pipefail` the whole pipeline then looks like a failure.)
+SYMS="$(strings "$BIN")"
 for needed in 'h264_videotoolbox' 'hevc_videotoolbox' 'aac '; do
-    if ! strings "$BIN" | grep -qE "$needed"; then
-        echo "✗ binary missing expected symbol: $needed" >&2
-        exit 1
-    fi
+    case "$SYMS" in
+        *"$needed"*) ;;
+        *)
+            echo "✗ binary missing expected symbol: $needed" >&2
+            exit 1
+            ;;
+    esac
 done
 echo "  ✓ videotoolbox + native aac encoders present"
 
