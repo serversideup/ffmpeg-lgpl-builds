@@ -74,16 +74,17 @@ fi
 FFMPEG_VERSION="$(tr -d '[:space:]' < "$REPO_ROOT/VERSION")"
 
 # Defense-in-depth: even though VERSION drives the URL, the SHA256 is pinned
-# here. Bumping VERSION without bumping this constant aborts the build.
-declare -A EXPECTED_SHA256
-EXPECTED_SHA256["8.1.1"]="b6863adde98898f42602017462871b5f6333e65aec803fdd7a6308639c52edf3"
-
-if [ -z "${EXPECTED_SHA256[$FFMPEG_VERSION]:-}" ]; then
-    echo "✗ no pinned SHA256 for FFmpeg $FFMPEG_VERSION in scripts/build-macos.sh" >&2
-    echo "  add an entry to EXPECTED_SHA256 after verifying against ffmpeg.org" >&2
-    exit 1
-fi
-SHA256="${EXPECTED_SHA256[$FFMPEG_VERSION]}"
+# here. Bumping VERSION without bumping this table aborts the build.
+# (Case statement instead of an associative array so we stay compatible with
+# macOS's stock bash 3.2.)
+case "$FFMPEG_VERSION" in
+    8.1.1) SHA256="b6863adde98898f42602017462871b5f6333e65aec803fdd7a6308639c52edf3" ;;
+    *)
+        echo "✗ no pinned SHA256 for FFmpeg $FFMPEG_VERSION in scripts/build-macos.sh" >&2
+        echo "  add a case branch after verifying against ffmpeg.org" >&2
+        exit 1
+        ;;
+esac
 
 BUILD_ROOT="${REPO_ROOT}/build/${TARGET}"
 TARBALL="${REPO_ROOT}/build/ffmpeg-${FFMPEG_VERSION}.tar.xz"

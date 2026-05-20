@@ -1,13 +1,15 @@
 name: build
 
-# Cuts a release whenever VERSION or BUILD-NUMBER changes on main.
+# Cuts a release whenever VERSION or the build script changes on main.
 # Also triggerable manually via workflow_dispatch for one-off rebuilds.
+# Build number = github.run_number (monotonic per workflow), so any push
+# or manual dispatch produces a fresh, distinct tag without needing a
+# tracked counter file in the repo.
 on:
   push:
     branches: [main]
     paths:
       - VERSION
-      - BUILD-NUMBER
       - scripts/build-macos.sh
       - .github/workflows/build.yml
   workflow_dispatch:
@@ -22,7 +24,7 @@ jobs:
     # https://depot.dev/docs/github-actions/runner-types. Both the native
     # arm64 build and the cross-compiled x86_64 build run here; the script
     # handles the cross-compilation switch internally.
-    runs-on: depot-macos-14
+    runs-on: depot-macos-15
     strategy:
       fail-fast: false
       matrix:
@@ -36,7 +38,7 @@ jobs:
         id: meta
         run: |
           version="$(tr -d '[:space:]' < VERSION)"
-          build="$(tr -d '[:space:]' < BUILD-NUMBER)"
+          build="${{ github.run_number }}"
           echo "ffmpeg_version=${version}" >> "$GITHUB_OUTPUT"
           echo "build_number=${build}" >> "$GITHUB_OUTPUT"
           echo "tag=v${version}-${build}" >> "$GITHUB_OUTPUT"
@@ -65,7 +67,7 @@ jobs:
         id: meta
         run: |
           version="$(tr -d '[:space:]' < VERSION)"
-          build="$(tr -d '[:space:]' < BUILD-NUMBER)"
+          build="${{ github.run_number }}"
           echo "ffmpeg_version=${version}" >> "$GITHUB_OUTPUT"
           echo "build_number=${build}" >> "$GITHUB_OUTPUT"
           echo "tag=v${version}-${build}" >> "$GITHUB_OUTPUT"
@@ -95,7 +97,7 @@ jobs:
             echo "## Upstream source"
             echo
             echo "- Tarball: <https://ffmpeg.org/releases/ffmpeg-${version}.tar.xz>"
-            echo "- Pinned SHA256: \`$(grep -E "EXPECTED_SHA256\\[\"${version}\"\\]" scripts/build-macos.sh | head -n1 | sed -E 's/.*="([^"]+)".*/\1/')\`"
+            echo "- Pinned SHA256: \`$(grep -E "^[[:space:]]*${version}\\)[[:space:]]+SHA256=" scripts/build-macos.sh | head -n1 | sed -E 's/.*SHA256="([^"]+)".*/\1/')\`"
             echo
             echo "## Build configuration"
             echo
