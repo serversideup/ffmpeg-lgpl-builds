@@ -1,0 +1,136 @@
+name: build
+
+# Cuts a release whenever VERSION or BUILD-NUMBER changes on main.
+# Also triggerable manually via workflow_dispatch for one-off rebuilds.
+on:
+  push:
+    branches: [main]
+    paths:
+      - VERSION
+      - BUILD-NUMBER
+      - scripts/build-macos.sh
+      - .github/workflows/build.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write  # required to create releases + upload assets
+
+jobs:
+  build-macos:
+    name: build ${{ matrix.target }}
+    # Depot's macOS runners are Apple Silicon (M2) only — see
+    # https://depot.dev/docs/github-actions/runner-types. Both the native
+    # arm64 build and the cross-compiled x86_64 build run here; the script
+    # handles the cross-compilation switch internally.
+    runs-on: depot-macos-14
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - aarch64-apple-darwin
+          - x86_64-apple-darwin
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: read version metadata
+        id: meta
+        run: |
+          version="$(tr -d '[:space:]' < VERSION)"
+          build="$(tr -d '[:space:]' < BUILD-NUMBER)"
+          echo "ffmpeg_version=${version}" >> "$GITHUB_OUTPUT"
+          echo "build_number=${build}" >> "$GITHUB_OUTPUT"
+          echo "tag=v${version}-${build}" >> "$GITHUB_OUTPUT"
+
+      - name: build
+        run: scripts/build-macos.sh --target ${{ matrix.target }}
+
+      - name: upload artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: ffmpeg-${{ steps.meta.outputs.ffmpeg_version }}-${{ matrix.target }}
+          path: |
+            dist/${{ matrix.target }}/ffmpeg-${{ steps.meta.outputs.ffmpeg_version }}-${{ matrix.target }}.tar.gz
+            dist/${{ matrix.target }}/ffmpeg-${{ steps.meta.outputs.ffmpeg_version }}-${{ matrix.target }}.tar.gz.sha256
+          if-no-files-found: error
+          retention-days: 7
+
+  release:
+    name: publish release
+    needs: build-macos
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: read version metadata
+        id: meta
+        run: |
+          version="$(tr -d '[:space:]' < VERSION)"
+          build="$(tr -d '[:space:]' < BUILD-NUMBER)"
+          echo "ffmpeg_version=${version}" >> "$GITHUB_OUTPUT"
+          echo "build_number=${build}" >> "$GITHUB_OUTPUT"
+          echo "tag=v${version}-${build}" >> "$GITHUB_OUTPUT"
+
+      - name: download artifacts
+        uses: actions/download-artifact@v8
+        with:
+          path: artifacts
+
+      - name: collect artifacts
+        id: collect
+        run: |
+          mkdir -p release
+          find artifacts -type f \( -name '*.tar.gz' -o -name '*.tar.gz.sha256' \) -exec cp {} release/ \;
+          ls -lh release/
+
+      - name: generate RELEASE-NOTES.md
+        run: |
+          version="${{ steps.meta.outputs.ffmpeg_version }}"
+          build="${{ steps.meta.outputs.build_number }}"
+          tag="${{ steps.meta.outputs.tag }}"
+          {
+            echo "# ${tag}"
+            echo
+            echo "FFmpeg ${version} (build ${build}), LGPL-2.1 only."
+            echo
+            echo "## Upstream source"
+            echo
+            echo "- Tarball: <https://ffmpeg.org/releases/ffmpeg-${version}.tar.xz>"
+            echo "- Pinned SHA256: \`$(grep -E "EXPECTED_SHA256\\[\"${version}\"\\]" scripts/build-macos.sh | head -n1 | sed -E 's/.*="([^"]+)".*/\1/')\`"
+            echo
+            echo "## Build configuration"
+            echo
+            echo '```'
+            grep -E '^\s+--' scripts/build-macos.sh | sed 's/\\$//' | sed 's/^[[:space:]]*//' | sort -u
+            echo '```'
+            echo
+            echo "## Artifacts"
+            echo
+            for sha in release/*.sha256; do
+              file="${sha%.sha256}"
+              name="$(basename "$file")"
+              hash="$(awk '{print $1}' "$sha")"
+              echo "- \`${name}\` — \`sha256:${hash}\`"
+            done
+            echo
+            echo "## Verification"
+            echo
+            echo "Extract a tarball and run \`./ffmpeg -version\`. The configuration line must contain \`--disable-gpl --disable-nonfree --disable-version3\` and must NOT contain \`--enable-gpl\`, \`--enable-nonfree\`, or \`--enable-version3\`."
+            echo
+            echo "Reproduce from source by checking out this repo at tag \`${tag}\` and running \`scripts/build-macos.sh --target <triple>\` on an Apple Silicon Mac with Xcode CLT installed."
+          } > release/RELEASE-NOTES.md
+          cat release/RELEASE-NOTES.md
+
+      - name: publish release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          tag="${{ steps.meta.outputs.tag }}"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "release $tag already exists — updating assets"
+            gh release upload "$tag" release/*.tar.gz release/*.sha256 --clobber
+          else
+            gh release create "$tag" \
+              --title "$tag" \
+              --notes-file release/RELEASE-NOTES.md \
+              release/*.tar.gz release/*.sha256
+          fi
