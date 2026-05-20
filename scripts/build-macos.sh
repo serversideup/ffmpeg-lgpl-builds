@@ -139,6 +139,14 @@ for tool in make clang; do
     fi
 done
 
+# x86_64 builds need nasm for FFmpeg's hand-optimized x86 assembly. The arm64
+# build doesn't need it (aarch64 asm is gas-syntax and goes through clang).
+if [ "$CROSS" = "1" ] && ! command -v nasm >/dev/null 2>&1; then
+    echo "✗ nasm not found in PATH (required for x86_64 hand-optimized asm)" >&2
+    echo "  install: brew install nasm" >&2
+    exit 1
+fi
+
 # Configure-stamp short-circuits reconfigure on repeat runs.
 STAMP="${SOURCE_DIR}/.configured-for-${TARGET}"
 if [ ! -f "$STAMP" ]; then

@@ -43,6 +43,10 @@ jobs:
           echo "build_number=${build}" >> "$GITHUB_OUTPUT"
           echo "tag=v${version}-${build}" >> "$GITHUB_OUTPUT"
 
+      - name: install nasm (x86_64 cross-build only)
+        if: matrix.target == 'x86_64-apple-darwin'
+        run: brew install nasm
+
       - name: build
         run: scripts/build-macos.sh --target ${{ matrix.target }}
 
