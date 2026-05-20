@@ -183,7 +183,7 @@ if [ ! -f "$STAMP" ]; then
         --cc="clang -arch ${CLANG_ARCH}" \
         --extra-cflags="-arch ${CLANG_ARCH} -mmacosx-version-min=12.0 -O3" \
         --extra-ldflags="-arch ${CLANG_ARCH} -mmacosx-version-min=12.0" \
-        "${EXTRA_CONFIGURE[@]}"
+        ${EXTRA_CONFIGURE[@]+"${EXTRA_CONFIGURE[@]}"}
     touch "$STAMP"
 else
     echo "✓ already configured (rm $STAMP to reconfigure)"
