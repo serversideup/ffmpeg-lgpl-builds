@@ -2,7 +2,13 @@
 
 Reproducible, LGPL-only FFmpeg binaries for closed-source applications.
 
-Built and published by [@serversideup](https://github.com/serversideup) so that downstream projects can consume FFmpeg without inheriting GPL or non-free obligations. The primary consumer is [Polycast](https://github.com/serversideup/polycast), but the artifacts are usable by anyone who needs a redistributable FFmpeg under LGPL-2.1.
+Built and published by [@serversideup](https://github.com/serversideup) so that downstream projects can consume FFmpeg without inheriting GPL or non-free obligations. 
+
+## Sponsored by Depot
+
+<a href="https://depot.dev/"><img src="https://serversideup.net/sponsors/depot.png" alt="Depot" width="250px"></a>
+
+These builds run on [Depot](https://depot.dev/)'s Apple Silicon macOS runners. Depot sponsors our CI so we can publish reproducible, multi-arch FFmpeg releases on real Apple hardware without paying the macOS-runner tax ourselves. If you need fast, cache-aware GitHub Actions runners (Linux, Windows, or macOS), give them a look. Huge thanks to the Depot team. 🙏
 
 ## What "LGPL-only" means here
 
@@ -73,13 +79,6 @@ tar -xzf ffmpeg-8.1.1-aarch64-apple-darwin.tar.gz
 
 To reproduce from source, check out this repo at the tag and run `scripts/build-macos.sh --target aarch64-apple-darwin` on an Apple Silicon Mac with Xcode CLT installed. The resulting `dist/aarch64-apple-darwin/ffmpeg` should be bit-identical (modulo embedded timestamps).
 
-## Licenses
+## License
 
-- `LICENSE` — LGPL-2.1 text, applicable to the *produced FFmpeg binaries*
-- `LICENSE-BUILD-SCRIPTS` — MIT, applicable to the build scripts in `scripts/` and the workflow files in `.github/`
-
-In other words: this repo's *tooling* is liberally licensed (MIT) so you can adapt it for your own LGPL FFmpeg builds. The *output* of that tooling is LGPL because that's what FFmpeg itself is when configured this way.
-
-## Related projects
-
-- [serversideup/polycast](https://github.com/serversideup/polycast) — multi-streaming desktop app, primary consumer
+This repository — both the build scripts and the FFmpeg binaries they produce — is distributed under **LGPL-2.1**. See `LICENSE` for the full text. The build script also bakes a copy of `COPYING.LGPLv2.1` (taken verbatim from the FFmpeg source tree) into every released tarball, so downstream consumers receive the license alongside the binary as LGPL § 6 requires.
