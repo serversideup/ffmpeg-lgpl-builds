@@ -9,8 +9,9 @@
 # Expected approach when implemented:
 #   - run inside a pinned Debian/Ubuntu LTS container so glibc is predictable
 #   - same --disable-gpl / --disable-nonfree / --disable-version3 flags
+#   - same --disable-programs --enable-ffmpeg --enable-ffprobe selection
 #   - hardware encoders: VAAPI / NVENC / QSV (all LGPL-clean)
-#   - same artifact layout: dist/x86_64-unknown-linux-gnu/{ffmpeg, COPYING.LGPLv2.1, SOURCE.txt}
+#   - same artifact layout: dist/x86_64-unknown-linux-gnu/{ffmpeg, ffprobe, COPYING.LGPLv2.1, SOURCE.txt}
 #
 set -euo pipefail
 

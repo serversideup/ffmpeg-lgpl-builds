@@ -10,11 +10,13 @@
 # cross-compiled (clang on macOS can target either arch from either host
 # given the right -arch flag plus FFmpeg's --enable-cross-compile).
 #
-# Produces a self-contained, statically-linked ffmpeg binary that links to
-# only macOS system frameworks (no GPL libs, no Homebrew dylibs). Outputs:
+# Produces self-contained, statically-linked ffmpeg + ffprobe binaries that
+# link to only macOS system frameworks (no GPL libs, no Homebrew dylibs).
+# Outputs:
 #
 #   dist/<triple>/
 #     ffmpeg
+#     ffprobe
 #     COPYING.LGPLv2.1
 #     SOURCE.txt
 #     ffmpeg-<version>-<triple>.tar.gz
@@ -159,8 +161,8 @@ if [ ! -f "$STAMP" ]; then
     #                              FFmpeg from baking /opt/homebrew paths in
     #   --enable-static / --disable-shared
     #                              one self-contained binary; no runtime dylibs
-    #   --disable-programs --enable-ffmpeg
-    #                              build the ffmpeg binary only
+    #   --disable-programs --enable-ffmpeg --enable-ffprobe
+    #                              ship ffmpeg + ffprobe; no ffplay (drags in SDL)
     #   --enable-videotoolbox      Apple hardware encoder/decoder framework
     #   --enable-audiotoolbox      Apple hardware audio framework
     #   --enable-securetransport   TLS for rtmps/https without OpenSSL
@@ -174,7 +176,7 @@ if [ ! -f "$STAMP" ]; then
         --disable-gpl --disable-nonfree --disable-version3 \
         --disable-autodetect \
         --enable-static --disable-shared \
-        --disable-programs --enable-ffmpeg \
+        --disable-programs --enable-ffmpeg --enable-ffprobe \
         --disable-doc --disable-htmlpages --disable-manpages --disable-podpages --disable-txtpages \
         --disable-debug \
         --enable-videotoolbox --enable-audiotoolbox \
@@ -203,8 +205,13 @@ make -j"$(sysctl -n hw.ncpu)"
 make install
 
 BIN="${PREFIX}/bin/ffmpeg"
+FFPROBE_BIN="${PREFIX}/bin/ffprobe"
 if [ ! -x "$BIN" ]; then
     echo "✗ build did not produce $BIN" >&2
+    exit 1
+fi
+if [ ! -x "$FFPROBE_BIN" ]; then
+    echo "✗ build did not produce $FFPROBE_BIN" >&2
     exit 1
 fi
 
@@ -277,12 +284,44 @@ if [ "$CROSS" = "0" ]; then
     echo "  ✓ binary runs natively"
 fi
 
+# ffprobe sanity: same source build, same configure flags — so the LGPL/forbidden
+# checks above cover both. We still verify arch and linkage on the ffprobe binary
+# directly to catch a mispackaged dist (e.g. a stale install/ from a previous run).
+PROBE_ARCH="$(lipo -archs "$FFPROBE_BIN" 2>/dev/null || file "$FFPROBE_BIN")"
+case "$PROBE_ARCH" in
+    *"$CLANG_ARCH"*)
+        echo "  ✓ ffprobe is ${CLANG_ARCH}"
+        ;;
+    *)
+        echo "✗ ffprobe arch mismatch: expected ${CLANG_ARCH}, got '$PROBE_ARCH'" >&2
+        exit 1
+        ;;
+esac
+PROBE_DEPS="$(otool -L "$FFPROBE_BIN" | tail -n +2 | awk '{print $1}')"
+PROBE_NON_SYSTEM="$(echo "$PROBE_DEPS" | grep -Ev '^(/System/|/usr/lib/)' || true)"
+if [ -n "$PROBE_NON_SYSTEM" ]; then
+    echo "✗ ffprobe links to non-system libraries:" >&2
+    echo "$PROBE_NON_SYSTEM" >&2
+    exit 1
+fi
+echo "  ✓ ffprobe links only to macOS system frameworks"
+
+if [ "$CROSS" = "0" ]; then
+    if ! "$FFPROBE_BIN" -hide_banner -version >/dev/null; then
+        echo "✗ ffprobe -version failed on native build" >&2
+        exit 1
+    fi
+    echo "  ✓ ffprobe runs natively"
+fi
+
 # ---- stage ------------------------------------------------------------------
 echo "▶ staging to $OUT_DIR"
 rm -rf "$OUT_DIR"
 mkdir -p "$OUT_DIR"
 cp "$BIN" "$OUT_DIR/ffmpeg"
 chmod +x "$OUT_DIR/ffmpeg"
+cp "$FFPROBE_BIN" "$OUT_DIR/ffprobe"
+chmod +x "$OUT_DIR/ffprobe"
 
 cp "$SOURCE_DIR/COPYING.LGPLv2.1" "$OUT_DIR/COPYING.LGPLv2.1"
 [ -f "$SOURCE_DIR/LICENSE.md" ] && cp "$SOURCE_DIR/LICENSE.md" "$OUT_DIR/FFMPEG-LICENSE.md"
@@ -310,7 +349,7 @@ EOF
 # ---- package ----------------------------------------------------------------
 ARCHIVE="ffmpeg-${FFMPEG_VERSION}-${TARGET}.tar.gz"
 echo "▶ packaging $ARCHIVE"
-ARCHIVE_FILES=(ffmpeg COPYING.LGPLv2.1 SOURCE.txt)
+ARCHIVE_FILES=(ffmpeg ffprobe COPYING.LGPLv2.1 SOURCE.txt)
 if [ -f "$OUT_DIR/FFMPEG-LICENSE.md" ]; then
     ARCHIVE_FILES+=(FFMPEG-LICENSE.md)
 fi
@@ -322,9 +361,12 @@ fi
 
 BIN_SIZE="$(stat -f%z "$OUT_DIR/ffmpeg")"
 BIN_MB="$(awk "BEGIN{printf \"%.1f\", $BIN_SIZE/1024/1024}")"
+PROBE_SIZE="$(stat -f%z "$OUT_DIR/ffprobe")"
+PROBE_MB="$(awk "BEGIN{printf \"%.1f\", $PROBE_SIZE/1024/1024}")"
 
 echo
 echo "✅ LGPL ffmpeg ${FFMPEG_VERSION} built for ${TARGET}"
-echo "   binary:   $OUT_DIR/ffmpeg  (${BIN_MB} MB)"
+echo "   ffmpeg:   $OUT_DIR/ffmpeg   (${BIN_MB} MB)"
+echo "   ffprobe:  $OUT_DIR/ffprobe  (${PROBE_MB} MB)"
 echo "   archive:  $OUT_DIR/$ARCHIVE"
 echo "   sha256:   $OUT_DIR/${ARCHIVE}.sha256"

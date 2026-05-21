@@ -12,14 +12,15 @@ These builds run on [Depot](https://depot.dev/)'s Apple Silicon macOS runners. D
 
 ## What "LGPL-only" means here
 
-The produced `ffmpeg` binary is configured with:
+Each release ships a pair of binaries — `ffmpeg` and `ffprobe` — produced from the same configure pass and therefore inheriting the same flag profile:
 
 - `--disable-gpl` — no GPL-licensed code linked in (no `libx264`, no `libx265`, no `libxvid`, no `libpostproc`)
 - `--disable-nonfree` — no non-free code (no `libfdk_aac`)
 - `--disable-version3` — stays on LGPLv2.1 (avoids dependencies that would relicense the bundle to v3)
 - `--disable-autodetect` — no Homebrew or system optional libs sneak in; only what we explicitly enable
+- `--disable-programs --enable-ffmpeg --enable-ffprobe` — ship the two CLI tools downstream consumers need; skip `ffplay` (drags in SDL)
 
-The build is verified post-link to confirm none of those flags ended up enabled, and (on macOS) that the binary links only to system frameworks under `/System/` and `/usr/lib/`.
+The build is verified post-link to confirm none of those flags ended up enabled, and (on macOS) that both binaries link only to system frameworks under `/System/` and `/usr/lib/`.
 
 A consumer that bundles one of these binaries into a closed-source product still owes its end users the corresponding FFmpeg source under LGPL § 6. Since this repo's `VERSION` file pins an upstream FFmpeg release whose source is publicly available at `https://ffmpeg.org/releases/`, the source-availability obligation is satisfied by pointing users at that URL plus the SHA256 recorded in each release's `RELEASE-NOTES.md`. Consumers should reproduce this notice in their own distribution.
 
@@ -31,7 +32,7 @@ Tag format: `v<ffmpeg-version>-<run-number>`, e.g. `v8.1.1-42`, where `<run-numb
 
 Per release, per target, the published artifacts are:
 
-- `ffmpeg-<version>-<triple>.tar.gz` — contains the `ffmpeg` binary, `COPYING.LGPLv2.1`, and `SOURCE.txt` (provenance record)
+- `ffmpeg-<version>-<triple>.tar.gz` — contains the `ffmpeg` and `ffprobe` binaries, `COPYING.LGPLv2.1`, and `SOURCE.txt` (provenance record)
 - `ffmpeg-<version>-<triple>.tar.gz.sha256`
 
 Currently supported targets:
@@ -69,7 +70,8 @@ Given an artifact `ffmpeg-8.1.1-aarch64-apple-darwin.tar.gz`:
 # Confirm the SHA256 matches the published .sha256
 shasum -a 256 -c ffmpeg-8.1.1-aarch64-apple-darwin.tar.gz.sha256
 
-# Confirm LGPL flags in the binary itself
+# Confirm LGPL flags in the binary itself (ffprobe came from the same configure
+# pass, so checking ffmpeg covers both)
 tar -xzf ffmpeg-8.1.1-aarch64-apple-darwin.tar.gz
 ./ffmpeg -version | grep configuration | tr ' ' '\n' | grep -E '^--' | sort
 
@@ -77,7 +79,7 @@ tar -xzf ffmpeg-8.1.1-aarch64-apple-darwin.tar.gz
 # Should contain: --disable-gpl, --disable-nonfree, --disable-version3
 ```
 
-To reproduce from source, check out this repo at the tag and run `scripts/build-macos.sh --target aarch64-apple-darwin` on an Apple Silicon Mac with Xcode CLT installed. The resulting `dist/aarch64-apple-darwin/ffmpeg` should be bit-identical (modulo embedded timestamps).
+To reproduce from source, check out this repo at the tag and run `scripts/build-macos.sh --target aarch64-apple-darwin` on an Apple Silicon Mac with Xcode CLT installed. The resulting `dist/aarch64-apple-darwin/{ffmpeg,ffprobe}` should be bit-identical (modulo embedded timestamps).
 
 ## License
 

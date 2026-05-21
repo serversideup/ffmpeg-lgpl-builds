@@ -7,9 +7,10 @@
 # Expected approach when implemented:
 #   - vcpkg or direct MSYS2/MinGW for build environment
 #   - same --disable-gpl / --disable-nonfree / --disable-version3 flags
+#   - same --disable-programs --enable-ffmpeg --enable-ffprobe selection
 #   - hardware encoders: NVENC / AMF / QSV (all LGPL-clean — they're
 #     SDK headers, not GPL libraries)
-#   - same artifact layout: dist/x86_64-pc-windows-msvc/{ffmpeg.exe, COPYING.LGPLv2.1, SOURCE.txt}
+#   - same artifact layout: dist/x86_64-pc-windows-msvc/{ffmpeg.exe, ffprobe.exe, COPYING.LGPLv2.1, SOURCE.txt}
 
 Write-Error "build-windows.ps1 is not yet implemented. See README.md for the artifact contract."
 exit 2
