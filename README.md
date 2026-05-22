@@ -20,7 +20,15 @@ Each release ships a pair of binaries — `ffmpeg` and `ffprobe` — produced fr
 - `--disable-autodetect` — no Homebrew or system optional libs sneak in; only what we explicitly enable
 - `--disable-programs --enable-ffmpeg --enable-ffprobe` — ship the two CLI tools downstream consumers need; skip `ffplay` (drags in SDL)
 
-The build is verified post-link to confirm none of those flags ended up enabled, and (on macOS) that both binaries link only to system frameworks under `/System/` and `/usr/lib/`.
+Hardware-accelerated encoders are enabled per-platform from LGPL-clean SDK headers (the encoders themselves are GPU-vendor implementations; the SDK headers we link against are BSD/MIT and don't impose copyleft):
+
+- **macOS:** VideoToolbox (`h264_videotoolbox`, `hevc_videotoolbox`)
+- **Windows:** NVIDIA NVENC (`h264_nvenc`, `hevc_nvenc`), Intel Quick Sync via oneVPL (`h264_qsv`, `hevc_qsv`), AMD AMF (`h264_amf`, `hevc_amf`)
+
+The build is verified post-link to confirm none of the banned flags ended up enabled and that the linkage matches the platform's expectations:
+
+- **macOS:** both binaries link only to system frameworks under `/System/` and `/usr/lib/`
+- **Windows:** import table contains only standard Windows system DLLs plus `libvpl-2.dll` (Intel's oneVPL dispatcher, shipped alongside `ffmpeg.exe` — required so QSV works without a separate Intel runtime install)
 
 A consumer that bundles one of these binaries into a closed-source product still owes its end users the corresponding FFmpeg source under LGPL § 6. Since this repo's `VERSION` file pins an upstream FFmpeg release whose source is publicly available at `https://ffmpeg.org/releases/`, the source-availability obligation is satisfied by pointing users at that URL plus the SHA256 recorded in each release's `RELEASE-NOTES.md`. Consumers should reproduce this notice in their own distribution.
 
@@ -32,17 +40,17 @@ Tag format: `v<ffmpeg-version>-<run-number>`, e.g. `v8.1.1-42`, where `<run-numb
 
 Per release, per target, the published artifacts are:
 
-- `ffmpeg-<version>-<triple>.tar.gz` — contains the `ffmpeg` and `ffprobe` binaries, `COPYING.LGPLv2.1`, and `SOURCE.txt` (provenance record)
+- `ffmpeg-<version>-<triple>.tar.gz` — contains the `ffmpeg` (or `ffmpeg.exe`) and `ffprobe` binaries, `COPYING.LGPLv2.1`, and `SOURCE.txt` (provenance record). Windows builds additionally include `libvpl-2.dll` (Intel oneVPL dispatcher, MIT-licensed) and `LIBVPL-LICENSE.txt`.
 - `ffmpeg-<version>-<triple>.tar.gz.sha256`
 
 Currently supported targets:
 
 - `aarch64-apple-darwin` (macOS, Apple Silicon)
 - `x86_64-apple-darwin` (macOS, Intel — cross-compiled from Apple Silicon)
+- `x86_64-pc-windows-msvc` (Windows x64, built with mingw-w64 gcc via MSYS2 — the "msvc" in the triple is a consumer convention for "Windows x64"; the resulting PE executable is ABI-compatible regardless of caller toolchain)
 
 Planned (when downstream consumers need them):
 
-- `x86_64-pc-windows-msvc`
 - `x86_64-unknown-linux-gnu`
 
 ## How to bump the FFmpeg version
@@ -50,13 +58,13 @@ Planned (when downstream consumers need them):
 1. Look up the new upstream version at <https://ffmpeg.org/releases/>.
 2. Verify the tarball's SHA256 against the upstream signed checksum file.
 3. Edit `VERSION` to the new value, e.g. `8.2.0`.
-4. Add a case branch for the new version to `scripts/build-macos.sh` with the pinned tarball SHA256 (defence-in-depth check).
-5. Open a PR. CI runs the workflow on a draft tag for verification.
+4. Add a case branch for the new version to **both** `scripts/build-macos.sh` and `scripts/build-windows.sh` with the pinned tarball SHA256 (defence-in-depth check on each platform).
+5. Open a PR. CI runs the full matrix on the PR for verification.
 6. Merge to `main`. The push triggers the release workflow, producing `v<new-version>-<run-number>`.
 
 ## How to bump only the build flags
 
-Edit `scripts/build-macos.sh` and merge to `main`. The push triggers a new release with the same `VERSION` and the next run number, e.g. `v8.1.1-43`. Release notes call out the flag delta.
+Edit `scripts/build-macos.sh` or `scripts/build-windows.sh` and merge to `main`. The push triggers a new release with the same `VERSION` and the next run number, e.g. `v8.1.1-43`. Release notes call out the flag delta.
 
 ## How to trigger an ad-hoc rebuild
 
@@ -64,7 +72,7 @@ Run the workflow manually from the Actions tab (`workflow_dispatch`). Produces a
 
 ## How to verify a release independently
 
-Given an artifact `ffmpeg-8.1.1-aarch64-apple-darwin.tar.gz`:
+Given a macOS artifact `ffmpeg-8.1.1-aarch64-apple-darwin.tar.gz`:
 
 ```bash
 # Confirm the SHA256 matches the published .sha256
@@ -79,7 +87,28 @@ tar -xzf ffmpeg-8.1.1-aarch64-apple-darwin.tar.gz
 # Should contain: --disable-gpl, --disable-nonfree, --disable-version3
 ```
 
-To reproduce from source, check out this repo at the tag and run `scripts/build-macos.sh --target aarch64-apple-darwin` on an Apple Silicon Mac with Xcode CLT installed. The resulting `dist/aarch64-apple-darwin/{ffmpeg,ffprobe}` should be bit-identical (modulo embedded timestamps).
+Given a Windows artifact `ffmpeg-8.1.1-x86_64-pc-windows-msvc.tar.gz` (verify from PowerShell, cmd, or an MSYS2 shell):
+
+```powershell
+# Confirm the SHA256 matches the published .sha256
+Get-FileHash -Algorithm SHA256 ffmpeg-8.1.1-x86_64-pc-windows-msvc.tar.gz
+
+# Confirm LGPL flags + expected hardware encoders
+tar -xzf ffmpeg-8.1.1-x86_64-pc-windows-msvc.tar.gz
+.\ffmpeg.exe -version
+.\ffmpeg.exe -hide_banner -encoders | Select-String 'nvenc|qsv|amf|aac'
+
+# Should list h264_nvenc, hevc_nvenc, h264_qsv, hevc_qsv, h264_amf, hevc_amf, aac
+# (which encoders can actually encode at runtime depends on the host's GPU
+# drivers — the binary always *contains* all of them)
+```
+
+To reproduce from source, check out this repo at the tag and run the platform's build script:
+
+- **macOS:** `scripts/build-macos.sh --target aarch64-apple-darwin` on an Apple Silicon Mac with Xcode CLT installed.
+- **Windows:** `scripts/build-windows.sh --target x86_64-pc-windows-msvc` from inside an MSYS2 MINGW64 shell with the toolchain + encoder header packages installed (see `.github/workflows/build.yml` for the exact `pacman -S` list).
+
+The resulting `dist/<triple>/{ffmpeg,ffprobe}` (or `.exe`) binaries should be bit-identical to the published artifact (modulo embedded timestamps).
 
 ## License
 
