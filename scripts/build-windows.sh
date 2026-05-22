@@ -282,7 +282,7 @@ echo "  ✓ nvenc + amf + qsv + aac encoders present"
 ALLOWED=(
     KERNEL32.dll USER32.dll GDI32.dll ADVAPI32.dll SHELL32.dll
     OLE32.dll OLEAUT32.dll WS2_32.dll IPHLPAPI.dll
-    BCRYPT.dll SECUR32.dll CRYPT32.dll
+    BCRYPT.dll SECUR32.dll CRYPT32.dll NCRYPT.dll
     msvcrt.dll
     libvpl-2.dll
 )
