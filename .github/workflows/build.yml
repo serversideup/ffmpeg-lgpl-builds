@@ -11,6 +11,13 @@ on:
     paths:
       - VERSION
       - scripts/build-macos.sh
+      - scripts/build-windows.sh
+      - .github/workflows/build.yml
+  pull_request:
+    paths:
+      - VERSION
+      - scripts/build-macos.sh
+      - scripts/build-windows.sh
       - .github/workflows/build.yml
   workflow_dispatch:
 
@@ -60,9 +67,68 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  build-windows:
+    name: build ${{ matrix.target }}
+    runs-on: depot-windows-2025-8
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - x86_64-pc-windows-msvc
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: read version metadata
+        id: meta
+        shell: bash
+        run: |
+          version="$(tr -d '[:space:]' < VERSION)"
+          build="${{ github.run_number }}"
+          echo "ffmpeg_version=${version}" >> "$GITHUB_OUTPUT"
+          echo "build_number=${build}" >> "$GITHUB_OUTPUT"
+          echo "tag=v${version}-${build}" >> "$GITHUB_OUTPUT"
+
+      # Provision MSYS2 + the mingw-w64 toolchain and encoder header packages.
+      # The build-windows.sh script verifies these are present and errors if
+      # any are missing — so this list is the source of truth.
+      - name: set up MSYS2
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          install: >-
+            base-devel
+            mingw-w64-x86_64-toolchain
+            mingw-w64-x86_64-pkgconf
+            mingw-w64-x86_64-nasm
+            mingw-w64-x86_64-yasm
+            mingw-w64-x86_64-ffnvcodec-headers
+            mingw-w64-x86_64-amf-headers
+            mingw-w64-x86_64-libvpl
+            git
+            diffutils
+            tar
+
+      - name: build
+        shell: msys2 {0}
+        run: scripts/build-windows.sh --target ${{ matrix.target }}
+
+      - name: upload artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: ffmpeg-${{ steps.meta.outputs.ffmpeg_version }}-${{ matrix.target }}
+          path: |
+            dist/${{ matrix.target }}/ffmpeg-${{ steps.meta.outputs.ffmpeg_version }}-${{ matrix.target }}.tar.gz
+            dist/${{ matrix.target }}/ffmpeg-${{ steps.meta.outputs.ffmpeg_version }}-${{ matrix.target }}.tar.gz.sha256
+          if-no-files-found: error
+          retention-days: 7
+
   release:
     name: publish release
-    needs: build-macos
+    # PRs run the build matrix to verify nothing's broken, but only pushes to
+    # main produce a published release tag.
+    if: github.event_name != 'pull_request'
+    needs: [build-macos, build-windows]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -105,8 +171,16 @@ jobs:
             echo
             echo "## Build configuration"
             echo
+            echo "### macOS (\`*-apple-darwin\`)"
+            echo
             echo '```'
             grep -E '^\s+--' scripts/build-macos.sh | sed 's/\\$//' | sed 's/^[[:space:]]*//' | sort -u
+            echo '```'
+            echo
+            echo "### Windows (\`x86_64-pc-windows-msvc\`)"
+            echo
+            echo '```'
+            grep -E '^\s+--' scripts/build-windows.sh | sed 's/\\$//' | sed 's/^[[:space:]]*//' | sort -u
             echo '```'
             echo
             echo "## Artifacts"
