@@ -28,7 +28,7 @@ Hardware-accelerated encoders are enabled per-platform from LGPL-clean SDK heade
 The build is verified post-link to confirm none of the banned flags ended up enabled and that the linkage matches the platform's expectations:
 
 - **macOS:** both binaries link only to system frameworks under `/System/` and `/usr/lib/`
-- **Windows:** import table contains only standard Windows system DLLs plus `libvpl-2.dll` (Intel's oneVPL dispatcher, shipped alongside `ffmpeg.exe` — required so QSV works without a separate Intel runtime install)
+- **Windows:** import table contains only standard Windows system DLLs plus two bundled runtime DLLs — `libvpl-2.dll` (Intel's oneVPL dispatcher; MIT) and `libwinpthread-1.dll` (mingw-w64 pthread runtime; BSD-style permissive). Both ship alongside `ffmpeg.exe`. Bundled DLLs are required because libvpl is dispatcher-only (no static option) and libwinpthread is injected late in FFmpeg's link command in a way that can't be redirected to the static archive without breaking libvpl. Both are LGPL-compatible permissive licenses, so bundling them imposes no copyleft beyond what the FFmpeg LGPL already does
 
 A consumer that bundles one of these binaries into a closed-source product still owes its end users the corresponding FFmpeg source under LGPL § 6. Since this repo's `VERSION` file pins an upstream FFmpeg release whose source is publicly available at `https://ffmpeg.org/releases/`, the source-availability obligation is satisfied by pointing users at that URL plus the SHA256 recorded in each release's `RELEASE-NOTES.md`. Consumers should reproduce this notice in their own distribution.
 
@@ -40,7 +40,7 @@ Tag format: `v<ffmpeg-version>-<run-number>`, e.g. `v8.1.1-42`, where `<run-numb
 
 Per release, per target, the published artifacts are:
 
-- `ffmpeg-<version>-<triple>.tar.gz` — contains the `ffmpeg` (or `ffmpeg.exe`) and `ffprobe` binaries, `COPYING.LGPLv2.1`, and `SOURCE.txt` (provenance record). Windows builds additionally include `libvpl-2.dll` (Intel oneVPL dispatcher, MIT-licensed) and `LIBVPL-LICENSE.txt`.
+- `ffmpeg-<version>-<triple>.tar.gz` — contains the `ffmpeg` (or `ffmpeg.exe`) and `ffprobe` binaries, `COPYING.LGPLv2.1`, and `SOURCE.txt` (provenance record). Windows builds additionally include `libvpl-2.dll` (Intel oneVPL dispatcher, MIT-licensed) + `LIBVPL-LICENSE.txt`, and `libwinpthread-1.dll` (mingw-w64 pthread runtime, BSD-style permissive) + `LIBWINPTHREAD-LICENSE.txt`.
 - `ffmpeg-<version>-<triple>.tar.gz.sha256`
 
 Currently supported targets:

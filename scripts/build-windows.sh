@@ -190,10 +190,17 @@ if [ ! -f "$STAMP" ]; then
     #                              ask pkg-config for the static dep chain so
     #                              transitive libs (e.g. libvpl's deps) link
     #                              correctly
-    #   --extra-ldflags="-static-libgcc -Wl,-Bstatic -lwinpthread -Wl,-Bdynamic"
-    #                              statically link mingw runtime pieces
-    #                              (libgcc + libwinpthread) so the only DLL
-    #                              we ship beside ffmpeg.exe is libvpl-2.dll
+    #   --extra-ldflags="-static-libgcc"
+    #                              static libgcc keeps libgcc_s_seh-1.dll out
+    #                              of the import table. We don't try to also
+    #                              static-link libwinpthread because FFmpeg's
+    #                              EXTRALIBS injects -lpthread late in the link
+    #                              command, after any -Bstatic switch in our
+    #                              extra-ldflags has been reset by FFmpeg's own
+    #                              flags — so libwinpthread-1.dll inevitably
+    #                              shows up in the import table. We ship it
+    #                              alongside ffmpeg.exe (BSD-style permissive
+    #                              license, LGPL-clean, ~70KB).
     ./configure \
         --prefix="$PREFIX" \
         --disable-gpl --disable-nonfree --disable-version3 \
@@ -220,7 +227,7 @@ if [ ! -f "$STAMP" ]; then
         --pkg-config="$PKG_CONFIG" \
         --pkg-config-flags=--static \
         --extra-cflags="-O3" \
-        --extra-ldflags="-static-libgcc -Wl,-Bstatic -lwinpthread -Wl,-Bdynamic"
+        --extra-ldflags="-static-libgcc"
     touch "$STAMP"
 else
     echo "✓ already configured (rm $STAMP to reconfigure)"
@@ -285,6 +292,7 @@ ALLOWED=(
     BCRYPT.dll SECUR32.dll CRYPT32.dll NCRYPT.dll
     msvcrt.dll
     libvpl-2.dll
+    libwinpthread-1.dll
 )
 verify_imports() {
     local exe="$1"
@@ -325,22 +333,34 @@ mkdir -p "$OUT_DIR"
 cp "$BIN" "$OUT_DIR/ffmpeg.exe"
 cp "$FFPROBE_BIN" "$OUT_DIR/ffprobe.exe"
 
-# Bundle Intel's oneVPL dispatcher. ffmpeg.exe imports it for QSV encoding;
-# there's no static option for the dispatcher (that's the dispatcher's whole
-# job — selecting the right vendor runtime at load time).
-VPL_DLL="/mingw64/bin/libvpl-2.dll"
-if [ ! -f "$VPL_DLL" ]; then
-    echo "✗ libvpl-2.dll not found at $VPL_DLL" >&2
-    exit 1
-fi
-cp "$VPL_DLL" "$OUT_DIR/libvpl-2.dll"
+# Bundle the runtime DLLs ffmpeg.exe imports:
+#
+#   libvpl-2.dll     — Intel oneVPL dispatcher. No static option (dispatcher's
+#                      job is loading the vendor runtime at runtime). MIT.
+#   libwinpthread-1.dll — mingw-w64 pthread runtime. We can't reliably statically
+#                      link this without forcing every other dep static too,
+#                      which would break libvpl. BSD-style permissive.
+for src in /mingw64/bin/libvpl-2.dll /mingw64/bin/libwinpthread-1.dll; do
+    name="$(basename "$src")"
+    if [ ! -f "$src" ]; then
+        echo "✗ $name not found at $src" >&2
+        exit 1
+    fi
+    cp "$src" "$OUT_DIR/$name"
+done
 
 cp "$SOURCE_DIR/COPYING.LGPLv2.1" "$OUT_DIR/COPYING.LGPLv2.1"
 
-# Bundle libvpl's license alongside the DLL we ship (MIT).
+# Bundle licenses for the DLLs we ship alongside ffmpeg.exe.
 for vpl_license in /mingw64/share/licenses/libvpl/LICENSE.txt /mingw64/share/licenses/libvpl/LICENSE; do
     if [ -f "$vpl_license" ]; then
         cp "$vpl_license" "$OUT_DIR/LIBVPL-LICENSE.txt"
+        break
+    fi
+done
+for wp_license in /mingw64/share/licenses/winpthreads/COPYING /mingw64/share/licenses/winpthreads/LICENSE; do
+    if [ -f "$wp_license" ]; then
+        cp "$wp_license" "$OUT_DIR/LIBWINPTHREAD-LICENSE.txt"
         break
     fi
 done
@@ -365,10 +385,18 @@ scripts used to produce this binary are at:
 
 Check out the tag matching this binary's release to reproduce the build.
 
-This artifact also bundles libvpl-2.dll, Intel's oneVPL dispatcher (MIT-
-licensed). It is loaded by ffmpeg.exe at runtime when the Intel Quick Sync
-encoders (h264_qsv / hevc_qsv) are selected. See LIBVPL-LICENSE.txt for the
-dispatcher's license terms.
+This artifact also bundles two runtime DLLs that ffmpeg.exe imports:
+
+  libvpl-2.dll        — Intel oneVPL dispatcher (MIT). Loaded at runtime when
+                        the Intel Quick Sync encoders (h264_qsv / hevc_qsv)
+                        are selected. See LIBVPL-LICENSE.txt.
+  libwinpthread-1.dll — mingw-w64 pthread runtime (BSD-style permissive).
+                        Imported unconditionally by FFmpeg's static libs.
+                        See LIBWINPTHREAD-LICENSE.txt.
+
+Both DLLs are permissively-licensed and LGPL-compatible; bundling them
+imposes no copyleft obligation on downstream consumers beyond what the FFmpeg
+LGPL already does.
 
 The "msvc" in the target triple is a consumer convention (Rust, vendor.toml)
 for "Windows x64." The actual build toolchain is mingw-w64 gcc; the resulting
@@ -379,9 +407,12 @@ EOF
 # ---- package ----------------------------------------------------------------
 ARCHIVE="ffmpeg-${FFMPEG_VERSION}-${TARGET}.tar.gz"
 echo "▶ packaging $ARCHIVE"
-ARCHIVE_FILES=(ffmpeg.exe ffprobe.exe libvpl-2.dll COPYING.LGPLv2.1 SOURCE.txt)
+ARCHIVE_FILES=(ffmpeg.exe ffprobe.exe libvpl-2.dll libwinpthread-1.dll COPYING.LGPLv2.1 SOURCE.txt)
 if [ -f "$OUT_DIR/LIBVPL-LICENSE.txt" ]; then
     ARCHIVE_FILES+=(LIBVPL-LICENSE.txt)
+fi
+if [ -f "$OUT_DIR/LIBWINPTHREAD-LICENSE.txt" ]; then
+    ARCHIVE_FILES+=(LIBWINPTHREAD-LICENSE.txt)
 fi
 ( cd "$OUT_DIR" && tar -czf "$ARCHIVE" "${ARCHIVE_FILES[@]}" )
 ( cd "$OUT_DIR" && sha256sum "$ARCHIVE" > "${ARCHIVE}.sha256" )
