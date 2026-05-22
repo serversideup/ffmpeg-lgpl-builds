@@ -283,17 +283,30 @@ for needed in 'h264_nvenc' 'hevc_nvenc' 'h264_amf' 'hevc_amf' 'h264_qsv' 'hevc_q
 done
 echo "  ✓ nvenc + amf + qsv + aac encoders present"
 
-# DLL import audit. Anything outside this allow-list means a mingw runtime
-# DLL leaked (libgcc_s_*, libwinpthread, libssp) or --disable-autodetect
-# missed a transitive — either way we refuse to ship.
-ALLOWED=(
-    KERNEL32.dll USER32.dll GDI32.dll ADVAPI32.dll SHELL32.dll
-    OLE32.dll OLEAUT32.dll WS2_32.dll IPHLPAPI.dll
-    BCRYPT.dll SECUR32.dll CRYPT32.dll NCRYPT.dll
-    msvcrt.dll
+# DLL import audit. The audit's job is to catch surprise runtime deps: a
+# mingw runtime we didn't statically link (libgcc_s_*, libssp, …) or a
+# third-party lib that --disable-autodetect missed. Each imported DLL must
+# resolve to one of two known-good categories:
+#
+#   (a) a Windows system DLL — meaning Windows itself provides it; we don't
+#       ship or license it. The test is "does it exist in C:\Windows\System32\?"
+#       — Windows is the authoritative source for what's a system DLL.
+#
+#   (b) a DLL we explicitly bundle in this artifact (BUNDLED_DLLS), which we
+#       license-audit per-DLL above.
+#
+# Anything not matching either category means an unexpected dep that needs a
+# decision (statically link it, bundle it, or remove the upstream cause).
+BUNDLED_DLLS=(
     libvpl-2.dll
     libwinpthread-1.dll
 )
+SYSTEM32="/c/Windows/System32"
+if [ ! -d "$SYSTEM32" ]; then
+    echo "✗ $SYSTEM32 not found — can't run the import audit" >&2
+    exit 1
+fi
+
 verify_imports() {
     local exe="$1"
     local label="$2"
@@ -301,19 +314,26 @@ verify_imports() {
     while read -r dll; do
         dll="$(echo "$dll" | tr -d '[:space:]')"
         [ -z "$dll" ] && continue
-        local ok=0
-        for allowed in "${ALLOWED[@]}"; do
-            if [ "${dll,,}" = "${allowed,,}" ]; then ok=1; break; fi
+
+        # (a) bundled DLL — we ship and license-audit it.
+        local bundled=0
+        for b in "${BUNDLED_DLLS[@]}"; do
+            if [ "${dll,,}" = "${b,,}" ]; then bundled=1; break; fi
         done
-        if [ "$ok" -eq 0 ]; then
-            echo "✗ $label depends on unexpected DLL: $dll" >&2
-            return 1
-        fi
+        [ "$bundled" -eq 1 ] && continue
+
+        # (b) Windows system DLL — present in System32. NTFS is case-insensitive
+        # so an all-caps name from objdump still resolves a lower-case file.
+        [ -f "$SYSTEM32/$dll" ] && continue
+
+        echo "✗ $label depends on unexpected DLL: $dll" >&2
+        echo "  (not in BUNDLED_DLLS, not present in $SYSTEM32)" >&2
+        return 1
     done < <(objdump -p "$exe" | grep -i 'DLL Name:' | awk '{print $3}')
 }
 verify_imports "$BIN"         "ffmpeg.exe"
 verify_imports "$FFPROBE_BIN"  "ffprobe.exe"
-echo "  ✓ imports only allowed Windows DLLs + libvpl"
+echo "  ✓ imports resolve to System32 + bundled DLLs"
 
 # Native run check — we're on Windows, so we can just execute the binary.
 if ! "$BIN" -hide_banner -version >/dev/null; then
