@@ -100,7 +100,13 @@ OUT_DIR="${REPO_ROOT}/dist/${TARGET}"
 mkdir -p "$BUILD_ROOT" "$OUT_DIR" "$(dirname "$TARBALL")"
 
 # ---- prereq verification ----------------------------------------------------
-for tool in gcc make nasm pkg-config curl tar sha256sum strings objdump; do
+# Anchor pkg-config to the MINGW64 install so neither this script's checks
+# nor FFmpeg's configure can pick up the msys2-native pkg-config (which
+# wouldn't see /mingw64/lib/pkgconfig/) if PATH order ever shifted.
+export PKG_CONFIG=/mingw64/bin/pkg-config
+export PKG_CONFIG_PATH=/mingw64/lib/pkgconfig:/mingw64/share/pkgconfig
+
+for tool in gcc make nasm "$PKG_CONFIG" curl tar sha256sum strings objdump; do
     if ! command -v "$tool" >/dev/null 2>&1; then
         echo "✗ $tool not found in PATH" >&2
         echo "  install MSYS2 MINGW64 toolchain + dependencies; see .github/workflows/build.yml" >&2
@@ -111,7 +117,7 @@ done
 # Encoder header packages. NVENC + libvpl ship pkg-config files; AMF is
 # header-only and detected by a path probe.
 for pcfile in ffnvcodec vpl; do
-    if ! pkg-config --exists "$pcfile" 2>/dev/null; then
+    if ! "$PKG_CONFIG" --exists "$pcfile" 2>/dev/null; then
         echo "✗ pkg-config can't find $pcfile" >&2
         case "$pcfile" in
             ffnvcodec) echo "  install: pacman -S mingw-w64-x86_64-ffnvcodec-headers" >&2 ;;
@@ -167,12 +173,19 @@ if [ ! -f "$STAMP" ]; then
     #                              same — one self-contained binary
     #   --disable-programs --enable-ffmpeg --enable-ffprobe
     #                              same — ship the two CLI tools
+    #   --enable-ffnvcodec         the NVIDIA codec headers library. Must be
+    #                              named explicitly because --disable-autodetect
+    #                              blocks the implicit auto-enable that nvenc
+    #                              would otherwise pull in.
     #   --enable-nvenc             (mac h264_videotoolbox → Windows NVIDIA NVENC)
     #   --enable-amf               (… AMD AMF on Polaris+/Ryzen APUs)
     #   --enable-libvpl            (… Intel QSV via oneVPL dispatcher)
     #   --enable-schannel          (mac --enable-securetransport → Windows Schannel)
     #   --target-os=mingw32        FFmpeg's identifier for the mingw-w64 target
     #                              regardless of bitness (legacy naming)
+    #   --pkg-config=$PKG_CONFIG   pin the MINGW64 pkg-config explicitly so the
+    #                              cross-compile heuristic in FFmpeg's configure
+    #                              can't pick up the msys2-native one
     #   --pkg-config-flags=--static
     #                              ask pkg-config for the static dep chain so
     #                              transitive libs (e.g. libvpl's deps) link
@@ -189,6 +202,7 @@ if [ ! -f "$STAMP" ]; then
         --disable-programs --enable-ffmpeg --enable-ffprobe \
         --disable-doc --disable-htmlpages --disable-manpages --disable-podpages --disable-txtpages \
         --disable-debug \
+        --enable-ffnvcodec \
         --enable-nvenc \
         --enable-amf \
         --enable-libvpl \
@@ -203,6 +217,7 @@ if [ ! -f "$STAMP" ]; then
         --enable-filter=scale,fps,format,aresample,asetnsamples,anull,null,copy \
         --arch=x86_64 --target-os=mingw32 \
         --cc=gcc \
+        --pkg-config="$PKG_CONFIG" \
         --pkg-config-flags=--static \
         --extra-cflags="-O3" \
         --extra-ldflags="-static-libgcc -Wl,-Bstatic -lwinpthread -Wl,-Bdynamic"
