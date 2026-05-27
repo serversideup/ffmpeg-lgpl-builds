@@ -122,23 +122,27 @@ done
 
 # Pin nv-codec-headers (the NVENC/NVDEC API stubs) from source rather than using
 # MSYS2's latest. The header version sets the MINIMUM NVIDIA driver NVENC accepts
-# at runtime:
-#   n12.0.16.0  → 522.25 (Windows) / 520.56.06 (Linux)   ~Oct 2022
-#   n13.0.x     → 570.0  (both)                           ~Feb 2025
-# The 13.0 default would reject any driver older than Feb 2025 — locking out the
-# large majority of streamers (a fresh GPU instance ships ~550-era drivers, and
-# plenty of consumer machines run older). H.264 NVENC — all Polycast ships — is
-# fully supported at 12.0, so pinning it costs no features and dramatically
-# widens driver compatibility (back to Kepler-era GPUs on a 2022+ driver).
-# Bump this tag only if a future FFmpeg needs newer NVENC symbols to compile.
-NVCODEC_TAG="n12.0.16.0"
+# at runtime. FFmpeg 8.1.1's configure accepts a cascade of header versions, each
+# mapping to a driver floor (Windows):
+#     >= 12.1.14.0              → 531.61   ~Mar 2023
+#     >= 12.0.16.1  && < 12.1   → 522.25   ~Oct 2022
+#     >= 11.1.5.3   && < 12.0   → 471.41   ~Jul 2021   ← we pick this
+#     >= 11.0.10.3  && < 11.1   → 456.71   ~Sep 2020
+# MSYS2's default (n13.0) demands driver 570+ (Feb 2025), which locks out most
+# streamers. We pick the oldest tier that still carries every NVENC feature
+# Polycast's H.264 argv uses — p-presets, -tune, spatial/temporal AQ, B-frame
+# refs, rc-lookahead, all present since SDK 10 / API 11.x — giving a ~5-year-old
+# driver floor that covers essentially any NVIDIA GPU updated since 2021.
+# NOTE: the cascade boundaries are exact — e.g. n12.0.16.0 is REJECTED because
+# the 12.0 tier requires >= .16.1. Bump only if a future FFmpeg drops a tier.
+NVCODEC_TAG="n11.1.5.3"
 NVCODEC_DIR="${BUILD_ROOT}/nv-codec-headers"
 if [ ! -d "$NVCODEC_DIR/.git" ]; then
     rm -rf "$NVCODEC_DIR"
     git clone --depth 1 --branch "$NVCODEC_TAG" \
         https://github.com/FFmpeg/nv-codec-headers.git "$NVCODEC_DIR"
 fi
-echo "▶ installing pinned nv-codec-headers ${NVCODEC_TAG} (min NVIDIA driver 522.25 Win / 520.56.06 Linux)"
+echo "▶ installing pinned nv-codec-headers ${NVCODEC_TAG} (min NVIDIA driver 471.41 Win / 470.57.02 Linux)"
 make -C "$NVCODEC_DIR" PREFIX=/mingw64 install
 
 # Encoder header packages. NVENC (just installed above) + libvpl ship pkg-config
@@ -453,7 +457,7 @@ SHA256:         ${SHA256}
 Built on:       $(date -u +%Y-%m-%dT%H:%M:%SZ)
 Built for:      ${TARGET}
 Toolchain:      mingw-w64 gcc (via MSYS2)
-NVENC API:      nv-codec-headers ${NVCODEC_TAG} — minimum NVIDIA driver 522.25 (Windows) / 520.56.06 (Linux)
+NVENC API:      nv-codec-headers ${NVCODEC_TAG} — minimum NVIDIA driver 471.41 (Windows) / 470.57.02 (Linux)
 Configuration:  ${CONFIG_CLEAN}
 
 This binary is LGPL-2.1-only. Per LGPL § 6, downstream end users are entitled
