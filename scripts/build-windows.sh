@@ -112,7 +112,7 @@ mkdir -p "$BUILD_ROOT" "$OUT_DIR" "$(dirname "$TARBALL")"
 export PKG_CONFIG=/mingw64/bin/pkg-config
 export PKG_CONFIG_PATH=/mingw64/lib/pkgconfig:/mingw64/share/pkgconfig
 
-for tool in gcc make nasm "$PKG_CONFIG" curl tar sha256sum strings objdump; do
+for tool in gcc make nasm git "$PKG_CONFIG" curl tar sha256sum strings objdump; do
     if ! command -v "$tool" >/dev/null 2>&1; then
         echo "✗ $tool not found in PATH" >&2
         echo "  install MSYS2 MINGW64 toolchain + dependencies; see .github/workflows/build.yml" >&2
@@ -120,13 +120,34 @@ for tool in gcc make nasm "$PKG_CONFIG" curl tar sha256sum strings objdump; do
     fi
 done
 
-# Encoder header packages. NVENC + libvpl ship pkg-config files; AMF is
-# header-only and detected by a path probe.
+# Pin nv-codec-headers (the NVENC/NVDEC API stubs) from source rather than using
+# MSYS2's latest. The header version sets the MINIMUM NVIDIA driver NVENC accepts
+# at runtime:
+#   n12.0.16.0  → 522.25 (Windows) / 520.56.06 (Linux)   ~Oct 2022
+#   n13.0.x     → 570.0  (both)                           ~Feb 2025
+# The 13.0 default would reject any driver older than Feb 2025 — locking out the
+# large majority of streamers (a fresh GPU instance ships ~550-era drivers, and
+# plenty of consumer machines run older). H.264 NVENC — all Polycast ships — is
+# fully supported at 12.0, so pinning it costs no features and dramatically
+# widens driver compatibility (back to Kepler-era GPUs on a 2022+ driver).
+# Bump this tag only if a future FFmpeg needs newer NVENC symbols to compile.
+NVCODEC_TAG="n12.0.16.0"
+NVCODEC_DIR="${BUILD_ROOT}/nv-codec-headers"
+if [ ! -d "$NVCODEC_DIR/.git" ]; then
+    rm -rf "$NVCODEC_DIR"
+    git clone --depth 1 --branch "$NVCODEC_TAG" \
+        https://github.com/FFmpeg/nv-codec-headers.git "$NVCODEC_DIR"
+fi
+echo "▶ installing pinned nv-codec-headers ${NVCODEC_TAG} (min NVIDIA driver 522.25 Win / 520.56.06 Linux)"
+make -C "$NVCODEC_DIR" PREFIX=/mingw64 install
+
+# Encoder header packages. NVENC (just installed above) + libvpl ship pkg-config
+# files; AMF is header-only and detected by a path probe.
 for pcfile in ffnvcodec vpl; do
     if ! "$PKG_CONFIG" --exists "$pcfile" 2>/dev/null; then
         echo "✗ pkg-config can't find $pcfile" >&2
         case "$pcfile" in
-            ffnvcodec) echo "  install: pacman -S mingw-w64-x86_64-ffnvcodec-headers" >&2 ;;
+            ffnvcodec) echo "  the pinned nv-codec-headers ${NVCODEC_TAG} build/install above failed — check git clone + make" >&2 ;;
             vpl)       echo "  install: pacman -S mingw-w64-x86_64-libvpl" >&2 ;;
         esac
         exit 1
@@ -432,6 +453,7 @@ SHA256:         ${SHA256}
 Built on:       $(date -u +%Y-%m-%dT%H:%M:%SZ)
 Built for:      ${TARGET}
 Toolchain:      mingw-w64 gcc (via MSYS2)
+NVENC API:      nv-codec-headers ${NVCODEC_TAG} — minimum NVIDIA driver 522.25 (Windows) / 520.56.06 (Linux)
 Configuration:  ${CONFIG_CLEAN}
 
 This binary is LGPL-2.1-only. Per LGPL § 6, downstream end users are entitled

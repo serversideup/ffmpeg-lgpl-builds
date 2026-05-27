@@ -102,7 +102,6 @@ jobs:
             mingw-w64-x86_64-pkgconf
             mingw-w64-x86_64-nasm
             mingw-w64-x86_64-yasm
-            mingw-w64-x86_64-ffnvcodec-headers
             mingw-w64-x86_64-amf-headers
             mingw-w64-x86_64-libvpl
             git
