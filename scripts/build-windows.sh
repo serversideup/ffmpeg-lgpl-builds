@@ -8,15 +8,21 @@
 # Usage:
 #   scripts/build-windows.sh --target x86_64-pc-windows-msvc
 #
-# Produces self-contained ffmpeg.exe + ffprobe.exe binaries plus Intel's
-# oneVPL dispatcher DLL (libvpl-2.dll), bundled in a tarball at:
+# Produces self-contained ffmpeg.exe + ffprobe.exe binaries plus the runtime
+# DLLs they (transitively) import, bundled in a tarball at:
 #
 #   dist/x86_64-pc-windows-msvc/
 #     ffmpeg.exe
 #     ffprobe.exe
-#     libvpl-2.dll                          (Intel QSV dispatcher — ships with us)
+#     libvpl-2.dll                          (Intel QSV dispatcher)
+#     libwinpthread-1.dll                   (mingw-w64 pthread runtime)
+#     libgcc_s_seh-1.dll                    (GCC unwinder — libvpl dep)
+#     libstdc++-6.dll                       (GCC C++ runtime — libvpl dep)
 #     COPYING.LGPLv2.1
 #     LIBVPL-LICENSE.txt
+#     LIBWINPTHREAD-LICENSE.txt
+#     GCC-RUNTIME-LIBRARY-EXCEPTION.txt
+#     GCC-LICENSE.txt
 #     SOURCE.txt
 #     ffmpeg-<version>-<triple>.tar.gz
 #     ffmpeg-<version>-<triple>.tar.gz.sha256
@@ -191,16 +197,20 @@ if [ ! -f "$STAMP" ]; then
     #                              transitive libs (e.g. libvpl's deps) link
     #                              correctly
     #   --extra-ldflags="-static-libgcc"
-    #                              static libgcc keeps libgcc_s_seh-1.dll out
-    #                              of the import table. We don't try to also
-    #                              static-link libwinpthread because FFmpeg's
+    #                              static libgcc keeps libgcc_s_seh-1.dll out of
+    #                              *ffmpeg.exe's own* import table. It comes back
+    #                              transitively anyway: libvpl-2.dll (a prebuilt
+    #                              mingw DLL we can't relink) imports both
+    #                              libgcc_s_seh-1.dll and libstdc++-6.dll, so we
+    #                              bundle those at stage time. We don't try to
+    #                              also static-link libwinpthread because FFmpeg's
     #                              EXTRALIBS injects -lpthread late in the link
     #                              command, after any -Bstatic switch in our
     #                              extra-ldflags has been reset by FFmpeg's own
     #                              flags — so libwinpthread-1.dll inevitably
-    #                              shows up in the import table. We ship it
-    #                              alongside ffmpeg.exe (BSD-style permissive
-    #                              license, LGPL-clean, ~70KB).
+    #                              shows up in the import table too. The
+    #                              transitive audit below is the backstop that
+    #                              guarantees we've bundled the full closure.
     ./configure \
         --prefix="$PREFIX" \
         --disable-gpl --disable-nonfree --disable-version3 \
@@ -283,69 +293,6 @@ for needed in 'h264_nvenc' 'hevc_nvenc' 'h264_amf' 'hevc_amf' 'h264_qsv' 'hevc_q
 done
 echo "  ✓ nvenc + amf + qsv + aac encoders present"
 
-# DLL import audit. The audit's job is to catch surprise runtime deps: a
-# mingw runtime we didn't statically link (libgcc_s_*, libssp, …) or a
-# third-party lib that --disable-autodetect missed. Each imported DLL must
-# resolve to one of two known-good categories:
-#
-#   (a) a Windows system DLL — meaning Windows itself provides it; we don't
-#       ship or license it. The test is "does it exist in C:\Windows\System32\?"
-#       — Windows is the authoritative source for what's a system DLL.
-#
-#   (b) a DLL we explicitly bundle in this artifact (BUNDLED_DLLS), which we
-#       license-audit per-DLL above.
-#
-# Anything not matching either category means an unexpected dep that needs a
-# decision (statically link it, bundle it, or remove the upstream cause).
-BUNDLED_DLLS=(
-    libvpl-2.dll
-    libwinpthread-1.dll
-)
-SYSTEM32="/c/Windows/System32"
-if [ ! -d "$SYSTEM32" ]; then
-    echo "✗ $SYSTEM32 not found — can't run the import audit" >&2
-    exit 1
-fi
-
-verify_imports() {
-    local exe="$1"
-    local label="$2"
-    local dll
-    while read -r dll; do
-        dll="$(echo "$dll" | tr -d '[:space:]')"
-        [ -z "$dll" ] && continue
-
-        # (a) bundled DLL — we ship and license-audit it.
-        local bundled=0
-        for b in "${BUNDLED_DLLS[@]}"; do
-            if [ "${dll,,}" = "${b,,}" ]; then bundled=1; break; fi
-        done
-        [ "$bundled" -eq 1 ] && continue
-
-        # (b) Windows system DLL — present in System32. NTFS is case-insensitive
-        # so an all-caps name from objdump still resolves a lower-case file.
-        [ -f "$SYSTEM32/$dll" ] && continue
-
-        echo "✗ $label depends on unexpected DLL: $dll" >&2
-        echo "  (not in BUNDLED_DLLS, not present in $SYSTEM32)" >&2
-        return 1
-    done < <(objdump -p "$exe" | grep -i 'DLL Name:' | awk '{print $3}')
-}
-verify_imports "$BIN"         "ffmpeg.exe"
-verify_imports "$FFPROBE_BIN"  "ffprobe.exe"
-echo "  ✓ imports resolve to System32 + bundled DLLs"
-
-# Native run check — we're on Windows, so we can just execute the binary.
-if ! "$BIN" -hide_banner -version >/dev/null; then
-    echo "✗ ffmpeg -version failed" >&2
-    exit 1
-fi
-if ! "$FFPROBE_BIN" -hide_banner -version >/dev/null; then
-    echo "✗ ffprobe -version failed" >&2
-    exit 1
-fi
-echo "  ✓ binaries run"
-
 # ---- stage ------------------------------------------------------------------
 echo "▶ staging to $OUT_DIR"
 rm -rf "$OUT_DIR"
@@ -353,14 +300,27 @@ mkdir -p "$OUT_DIR"
 cp "$BIN" "$OUT_DIR/ffmpeg.exe"
 cp "$FFPROBE_BIN" "$OUT_DIR/ffprobe.exe"
 
-# Bundle the runtime DLLs ffmpeg.exe imports:
+# Runtime DLLs we ship next to ffmpeg.exe. ffmpeg.exe imports libvpl-2.dll and
+# libwinpthread-1.dll directly; libvpl-2.dll in turn imports the mingw-w64 GCC
+# runtime (libgcc_s_seh-1.dll, libstdc++-6.dll). Because ffmpeg.exe imports
+# libvpl-2.dll unconditionally (not delay-loaded), the GCC runtime must ship
+# too or ffmpeg.exe fails to start (STATUS_DLL_NOT_FOUND, 0xC0000135) on any
+# machine without the MSYS2 toolchain on PATH. The transitive audit below
+# enforces that this list is the complete closure.
 #
-#   libvpl-2.dll     — Intel oneVPL dispatcher. No static option (dispatcher's
-#                      job is loading the vendor runtime at runtime). MIT.
-#   libwinpthread-1.dll — mingw-w64 pthread runtime. We can't reliably statically
-#                      link this without forcing every other dep static too,
-#                      which would break libvpl. BSD-style permissive.
-for src in /mingw64/bin/libvpl-2.dll /mingw64/bin/libwinpthread-1.dll; do
+#   libvpl-2.dll        — Intel oneVPL dispatcher (MIT). Can't static-link; the
+#                         dispatcher's whole job is loading the vendor runtime
+#                         at runtime.
+#   libwinpthread-1.dll — mingw-w64 pthread runtime (BSD-style permissive).
+#   libgcc_s_seh-1.dll  — GCC unwinder runtime. GPLv3 WITH the GCC Runtime
+#   libstdc++-6.dll       Library Exception, which explicitly permits shipping
+#                         these alongside a GCC-compiled program without
+#                         imposing copyleft on that program.
+for src in \
+    /mingw64/bin/libvpl-2.dll \
+    /mingw64/bin/libwinpthread-1.dll \
+    /mingw64/bin/libgcc_s_seh-1.dll \
+    /mingw64/bin/libstdc++-6.dll; do
     name="$(basename "$src")"
     if [ ! -f "$src" ]; then
         echo "✗ $name not found at $src" >&2
@@ -384,6 +344,84 @@ for wp_license in /mingw64/share/licenses/winpthreads/COPYING /mingw64/share/lic
         break
     fi
 done
+# GCC runtime: ship the Runtime Library Exception (the term that makes
+# redistribution alongside our binary copyleft-free) plus the GPLv3 base text.
+for gcc_dir in /mingw64/share/licenses/gcc-libs /mingw64/share/licenses/gcc; do
+    if [ -d "$gcc_dir" ]; then
+        if [ -f "$gcc_dir/RUNTIME.LIBRARY.EXCEPTION" ]; then
+            cp "$gcc_dir/RUNTIME.LIBRARY.EXCEPTION" "$OUT_DIR/GCC-RUNTIME-LIBRARY-EXCEPTION.txt"
+        fi
+        for gpl in "$gcc_dir/COPYING3" "$gcc_dir/COPYING"; do
+            if [ -f "$gpl" ]; then
+                cp "$gpl" "$OUT_DIR/GCC-LICENSE.txt"
+                break
+            fi
+        done
+        break
+    fi
+done
+
+# ---- transitive import audit ------------------------------------------------
+# Walk the full DLL import graph reachable from ffmpeg.exe / ffprobe.exe. Every
+# DLL must resolve to one of:
+#   (a) a file we bundle in $OUT_DIR (license-audited above), or
+#   (b) a Windows system DLL — present in System32; Windows itself provides it.
+# Anything else is an unexpected runtime dep that needs a decision. Unlike the
+# previous direct-imports-only check, this recurses into the bundled DLLs'
+# *own* imports — which is what catches libvpl-2.dll dragging in the GCC
+# runtime. NTFS is case-insensitive, so an all-caps name from objdump still
+# resolves a lower-case file.
+SYSTEM32="/c/Windows/System32"
+if [ ! -d "$SYSTEM32" ]; then
+    echo "✗ $SYSTEM32 not found — can't run the import audit" >&2
+    exit 1
+fi
+
+audit_import_closure() {
+    declare -A seen=()
+    local queue=("$OUT_DIR/ffmpeg.exe" "$OUT_DIR/ffprobe.exe")
+    while [ "${#queue[@]}" -gt 0 ]; do
+        local file="${queue[0]}"
+        queue=("${queue[@]:1}")
+        local dll
+        while read -r dll; do
+            dll="$(echo "$dll" | tr -d '[:space:]')"
+            [ -z "$dll" ] && continue
+            local lc="${dll,,}"
+            [ -n "${seen[$lc]:-}" ] && continue
+            seen[$lc]=1
+            if [ -f "$OUT_DIR/$dll" ]; then
+                queue+=("$OUT_DIR/$dll")    # bundled — recurse into its imports
+            elif [ -f "$SYSTEM32/$dll" ]; then
+                :                           # Windows system DLL — Windows provides it
+            else
+                echo "✗ unresolved runtime dependency: $dll" >&2
+                echo "  reached from the ffmpeg.exe/ffprobe.exe import graph;" >&2
+                echo "  not bundled in $OUT_DIR and not present in $SYSTEM32." >&2
+                echo "  fix: add it to the staged DLL list above, or static-link it." >&2
+                return 1
+            fi
+        done < <(objdump -p "$file" | grep -i 'DLL Name:' | awk '{print $3}')
+    done
+    return 0
+}
+echo "▶ auditing import closure"
+audit_import_closure
+echo "  ✓ every imported DLL resolves to System32 + bundled DLLs"
+
+# Self-contained run check: execute the *staged* binaries with /mingw64/bin off
+# PATH so they can only load DLLs from their own directory (cwd) plus System32
+# — exactly what an end user's machine looks like. The old check ran the
+# install-tree binary with the full MSYS2 PATH, which hid missing-bundle bugs
+# because the toolchain DLLs were resolvable.
+echo "▶ verifying staged binaries run self-contained"
+for exe in ffmpeg.exe ffprobe.exe; do
+    if ! ( cd "$OUT_DIR" && PATH="/c/Windows/System32:/c/Windows" "./$exe" -hide_banner -version >/dev/null ); then
+        echo "✗ staged $exe failed to run with a clean PATH (missing bundled DLL?)" >&2
+        exit 1
+    fi
+done
+echo "  ✓ binaries run self-contained"
 
 CONFIG_CLEAN="$(echo "$CONFIG_LINE" | sed -E 's/^.*configuration:[[:space:]]*//')"
 
@@ -405,7 +443,8 @@ scripts used to produce this binary are at:
 
 Check out the tag matching this binary's release to reproduce the build.
 
-This artifact also bundles two runtime DLLs that ffmpeg.exe imports:
+This artifact also bundles the runtime DLLs that ffmpeg.exe imports, directly
+or transitively:
 
   libvpl-2.dll        — Intel oneVPL dispatcher (MIT). Loaded at runtime when
                         the Intel Quick Sync encoders (h264_qsv / hevc_qsv)
@@ -413,10 +452,16 @@ This artifact also bundles two runtime DLLs that ffmpeg.exe imports:
   libwinpthread-1.dll — mingw-w64 pthread runtime (BSD-style permissive).
                         Imported unconditionally by FFmpeg's static libs.
                         See LIBWINPTHREAD-LICENSE.txt.
+  libgcc_s_seh-1.dll  — GCC unwinder runtime, imported by libvpl-2.dll.
+  libstdc++-6.dll     — GCC C++ runtime, imported by libvpl-2.dll.
+                        Both are GPLv3 WITH the GCC Runtime Library Exception,
+                        which explicitly permits redistributing them alongside
+                        a GCC-compiled program without imposing copyleft on
+                        that program. See GCC-RUNTIME-LIBRARY-EXCEPTION.txt and
+                        GCC-LICENSE.txt.
 
-Both DLLs are permissively-licensed and LGPL-compatible; bundling them
-imposes no copyleft obligation on downstream consumers beyond what the FFmpeg
-LGPL already does.
+All bundled DLLs are LGPL-compatible; shipping them imposes no copyleft
+obligation on downstream consumers beyond what the FFmpeg LGPL already does.
 
 The "msvc" in the target triple is a consumer convention (Rust, vendor.toml)
 for "Windows x64." The actual build toolchain is mingw-w64 gcc; the resulting
@@ -427,13 +472,21 @@ EOF
 # ---- package ----------------------------------------------------------------
 ARCHIVE="ffmpeg-${FFMPEG_VERSION}-${TARGET}.tar.gz"
 echo "▶ packaging $ARCHIVE"
-ARCHIVE_FILES=(ffmpeg.exe ffprobe.exe libvpl-2.dll libwinpthread-1.dll COPYING.LGPLv2.1 SOURCE.txt)
-if [ -f "$OUT_DIR/LIBVPL-LICENSE.txt" ]; then
-    ARCHIVE_FILES+=(LIBVPL-LICENSE.txt)
-fi
-if [ -f "$OUT_DIR/LIBWINPTHREAD-LICENSE.txt" ]; then
-    ARCHIVE_FILES+=(LIBWINPTHREAD-LICENSE.txt)
-fi
+ARCHIVE_FILES=(
+    ffmpeg.exe
+    ffprobe.exe
+    libvpl-2.dll
+    libwinpthread-1.dll
+    libgcc_s_seh-1.dll
+    libstdc++-6.dll
+    COPYING.LGPLv2.1
+    SOURCE.txt
+)
+for optional in LIBVPL-LICENSE.txt LIBWINPTHREAD-LICENSE.txt GCC-RUNTIME-LIBRARY-EXCEPTION.txt GCC-LICENSE.txt; do
+    if [ -f "$OUT_DIR/$optional" ]; then
+        ARCHIVE_FILES+=("$optional")
+    fi
+done
 ( cd "$OUT_DIR" && tar -czf "$ARCHIVE" "${ARCHIVE_FILES[@]}" )
 ( cd "$OUT_DIR" && sha256sum "$ARCHIVE" > "${ARCHIVE}.sha256" )
 
@@ -449,5 +502,6 @@ echo "✅ LGPL ffmpeg ${FFMPEG_VERSION} built for ${TARGET}"
 echo "   ffmpeg:    $OUT_DIR/ffmpeg.exe    (${BIN_MB} MB)"
 echo "   ffprobe:   $OUT_DIR/ffprobe.exe   (${PROBE_MB} MB)"
 echo "   libvpl-2:  $OUT_DIR/libvpl-2.dll  (${VPL_KB} KB — Intel QSV dispatcher)"
+echo "   + bundled GCC runtime: libgcc_s_seh-1.dll, libstdc++-6.dll, libwinpthread-1.dll"
 echo "   archive:   $OUT_DIR/$ARCHIVE"
 echo "   sha256:    $OUT_DIR/${ARCHIVE}.sha256"
