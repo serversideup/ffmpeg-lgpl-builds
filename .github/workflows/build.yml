@@ -104,6 +104,7 @@ jobs:
             mingw-w64-x86_64-yasm
             mingw-w64-x86_64-amf-headers
             mingw-w64-x86_64-libvpl
+            mingw-w64-x86_64-openh264
             git
             diffutils
             tar

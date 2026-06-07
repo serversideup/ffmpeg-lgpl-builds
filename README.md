@@ -25,6 +25,8 @@ Hardware-accelerated encoders are enabled per-platform from LGPL-clean SDK heade
 - **macOS:** VideoToolbox (`h264_videotoolbox`, `hevc_videotoolbox`)
 - **Windows:** NVIDIA NVENC (`h264_nvenc`, `hevc_nvenc`), Intel Quick Sync via oneVPL (`h264_qsv`, `hevc_qsv`), AMD AMF (`h264_amf`, `hevc_amf`)
 
+Windows also enables **libopenh264** (`--enable-libopenh264`), a software (CPU) H.264 encoder used as a last-resort fallback on hosts with no usable GPU encoder. OpenH264 is BSD-2-Clause, so it stays LGPL-clean and doesn't trip the forbidden-flag check (it is *not* `--enable-gpl`/`--enable-nonfree`/`--enable-version3`). It is statically linked via the MSYS2 `mingw-w64-x86_64-openh264` package, so it adds no new runtime DLL (its C++ runtime, `libstdc++-6.dll`, is already in the bundle closure via libvpl).
+
 The build is verified post-link to confirm none of the banned flags ended up enabled and that the linkage matches the platform's expectations:
 
 - **macOS:** both binaries link only to system frameworks under `/System/` and `/usr/lib/`

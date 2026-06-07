@@ -145,14 +145,16 @@ fi
 echo "▶ installing pinned nv-codec-headers ${NVCODEC_TAG} (min NVIDIA driver 471.41 Win / 470.57.02 Linux)"
 make -C "$NVCODEC_DIR" PREFIX=/mingw64 install
 
-# Encoder header packages. NVENC (just installed above) + libvpl ship pkg-config
-# files; AMF is header-only and detected by a path probe.
-for pcfile in ffnvcodec vpl; do
+# Encoder packages. NVENC (just installed above) + libvpl + openh264 ship
+# pkg-config files; AMF is header-only and detected by a path probe. openh264
+# is the BSD-2-Clause software H.264 encoder used as the CPU fallback.
+for pcfile in ffnvcodec vpl openh264; do
     if ! "$PKG_CONFIG" --exists "$pcfile" 2>/dev/null; then
         echo "✗ pkg-config can't find $pcfile" >&2
         case "$pcfile" in
             ffnvcodec) echo "  the pinned nv-codec-headers ${NVCODEC_TAG} build/install above failed — check git clone + make" >&2 ;;
             vpl)       echo "  install: pacman -S mingw-w64-x86_64-libvpl" >&2 ;;
+            openh264)  echo "  install: pacman -S mingw-w64-x86_64-openh264" >&2 ;;
         esac
         exit 1
     fi
@@ -196,7 +198,7 @@ cd "$SOURCE_DIR"
 
 STAMP="${SOURCE_DIR}/.configured-for-${TARGET}"
 if [ ! -f "$STAMP" ]; then
-    echo "▶ configuring (LGPL only, NVENC + QSV + AMF, Schannel TLS) for ${TARGET}"
+    echo "▶ configuring (LGPL only, NVENC + QSV + AMF + libopenh264 CPU fallback, Schannel TLS) for ${TARGET}"
     # Flag rationale (deltas from build-macos.sh in parens):
     #   --disable-gpl / --nonfree / --version3 / --autodetect
     #                              same — license discipline + no surprise deps
@@ -211,6 +213,12 @@ if [ ! -f "$STAMP" ]; then
     #   --enable-nvenc             (mac h264_videotoolbox → Windows NVIDIA NVENC)
     #   --enable-amf               (… AMD AMF on Polaris+/Ryzen APUs)
     #   --enable-libvpl            (… Intel QSV via oneVPL dispatcher)
+    #   --enable-libopenh264       software (CPU) H.264 fallback for hosts with no
+    #                              usable GPU encoder. BSD-2-Clause → LGPL-clean, so
+    #                              it doesn't trip the forbidden-flag guardrail below.
+    #                              Self-compiled, so the AVC patent pool (majority
+    #                              expired; fully expires 2027-11-29) sits with the
+    #                              distributor — see README "Patent note".
     #   --enable-schannel          (mac --enable-securetransport → Windows Schannel)
     #   --target-os=mingw32        FFmpeg's identifier for the mingw-w64 target
     #                              regardless of bitness (legacy naming)
@@ -248,8 +256,9 @@ if [ ! -f "$STAMP" ]; then
         --enable-nvenc \
         --enable-amf \
         --enable-libvpl \
+        --enable-libopenh264 \
         --enable-schannel \
-        --enable-encoder=h264_nvenc,hevc_nvenc,h264_amf,hevc_amf,h264_qsv,hevc_qsv,aac \
+        --enable-encoder=h264_nvenc,hevc_nvenc,h264_amf,hevc_amf,h264_qsv,hevc_qsv,libopenh264,aac \
         --enable-decoder=h264,hevc,aac,mp3,pcm_s16le,pcm_s24le,pcm_f32le \
         --enable-muxer=flv,mp4,mov \
         --enable-demuxer=flv,mpegts,mov,mp4 \
@@ -307,7 +316,7 @@ echo "  ✓ no GPL / non-free / v3 flags"
 # as build-macos.sh; captures `strings` output once to avoid pipefail / EPIPE
 # when grep -q would close the pipe early.
 SYMS="$(strings "$BIN")"
-for needed in 'h264_nvenc' 'hevc_nvenc' 'h264_amf' 'hevc_amf' 'h264_qsv' 'hevc_qsv' 'aac '; do
+for needed in 'h264_nvenc' 'hevc_nvenc' 'h264_amf' 'hevc_amf' 'h264_qsv' 'hevc_qsv' 'libopenh264' 'aac '; do
     case "$SYMS" in
         *"$needed"*) ;;
         *)
@@ -316,7 +325,7 @@ for needed in 'h264_nvenc' 'hevc_nvenc' 'h264_amf' 'hevc_amf' 'h264_qsv' 'hevc_q
             ;;
     esac
 done
-echo "  ✓ nvenc + amf + qsv + aac encoders present"
+echo "  ✓ nvenc + amf + qsv + libopenh264 + aac encoders present"
 
 # ---- stage ------------------------------------------------------------------
 echo "▶ staging to $OUT_DIR"
