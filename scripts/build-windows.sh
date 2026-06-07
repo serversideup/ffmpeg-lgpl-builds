@@ -216,9 +216,6 @@ if [ ! -f "$STAMP" ]; then
     #   --enable-libopenh264       software (CPU) H.264 fallback for hosts with no
     #                              usable GPU encoder. BSD-2-Clause → LGPL-clean, so
     #                              it doesn't trip the forbidden-flag guardrail below.
-    #                              Self-compiled, so the AVC patent pool (majority
-    #                              expired; fully expires 2027-11-29) sits with the
-    #                              distributor — see README "Patent note".
     #   --enable-schannel          (mac --enable-securetransport → Windows Schannel)
     #   --target-os=mingw32        FFmpeg's identifier for the mingw-w64 target
     #                              regardless of bitness (legacy naming)
