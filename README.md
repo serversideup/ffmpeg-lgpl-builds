@@ -25,7 +25,7 @@ Hardware-accelerated encoders are enabled per-platform from LGPL-clean SDK heade
 - **macOS:** VideoToolbox (`h264_videotoolbox`, `hevc_videotoolbox`)
 - **Windows:** NVIDIA NVENC (`h264_nvenc`, `hevc_nvenc`), Intel Quick Sync via oneVPL (`h264_qsv`, `hevc_qsv`), AMD AMF (`h264_amf`, `hevc_amf`)
 
-Windows also enables **libopenh264** (`--enable-libopenh264`), a software (CPU) H.264 encoder used as a last-resort fallback on hosts with no usable GPU encoder. OpenH264 is BSD-2-Clause, so it stays LGPL-clean and doesn't trip the forbidden-flag check (it is *not* `--enable-gpl`/`--enable-nonfree`/`--enable-version3`). It is statically linked via the MSYS2 `mingw-w64-x86_64-openh264` package, so it adds no new runtime DLL (its C++ runtime, `libstdc++-6.dll`, is already in the bundle closure via libvpl).
+Windows also enables **libopenh264** (`--enable-libopenh264`), a software (CPU) H.264 encoder used as a last-resort fallback on hosts with no usable GPU encoder. OpenH264 is BSD-2-Clause, so it stays LGPL-clean and doesn't trip the forbidden-flag check (it is *not* `--enable-gpl`/`--enable-nonfree`/`--enable-version3`). It is provided by the MSYS2 `mingw-w64-x86_64-openh264` package and ships as `libopenh264-7.dll` bundled alongside `ffmpeg.exe` (with its BSD-2-Clause license in `LIBOPENH264-LICENSE.txt`), the same way `libvpl-2.dll` is; the C++ runtime it needs, `libstdc++-6.dll`, is already in the bundle closure via libvpl.
 
 The build is verified post-link to confirm none of the banned flags ended up enabled and that the linkage matches the platform's expectations:
 
@@ -42,7 +42,7 @@ Tag format: `v<ffmpeg-version>-<run-number>`, e.g. `v8.1.1-42`, where `<run-numb
 
 Per release, per target, the published artifacts are:
 
-- `ffmpeg-<version>-<triple>.tar.gz` — contains the `ffmpeg` (or `ffmpeg.exe`) and `ffprobe` binaries, `COPYING.LGPLv2.1`, and `SOURCE.txt` (provenance record). Windows builds additionally include `libvpl-2.dll` (Intel oneVPL dispatcher, MIT-licensed) + `LIBVPL-LICENSE.txt`, and `libwinpthread-1.dll` (mingw-w64 pthread runtime, BSD-style permissive) + `LIBWINPTHREAD-LICENSE.txt`.
+- `ffmpeg-<version>-<triple>.tar.gz` — contains the `ffmpeg` (or `ffmpeg.exe`) and `ffprobe` binaries, `COPYING.LGPLv2.1`, and `SOURCE.txt` (provenance record). Windows builds additionally include `libvpl-2.dll` (Intel oneVPL dispatcher, MIT-licensed) + `LIBVPL-LICENSE.txt`, `libwinpthread-1.dll` (mingw-w64 pthread runtime, BSD-style permissive) + `LIBWINPTHREAD-LICENSE.txt`, and `libopenh264-7.dll` (Cisco OpenH264 software encoder, BSD-2-Clause) + `LIBOPENH264-LICENSE.txt`.
 - `ffmpeg-<version>-<triple>.tar.gz.sha256`
 
 Currently supported targets:

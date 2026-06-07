@@ -18,9 +18,11 @@
 #     libwinpthread-1.dll                   (mingw-w64 pthread runtime)
 #     libgcc_s_seh-1.dll                    (GCC unwinder — libvpl dep)
 #     libstdc++-6.dll                       (GCC C++ runtime — libvpl dep)
+#     libopenh264-7.dll                     (Cisco OpenH264 — software H.264 encoder)
 #     COPYING.LGPLv2.1
 #     LIBVPL-LICENSE.txt
 #     LIBWINPTHREAD-LICENSE.txt
+#     LIBOPENH264-LICENSE.txt
 #     GCC-RUNTIME-LIBRARY-EXCEPTION.txt
 #     GCC-LICENSE.txt
 #     SOURCE.txt
@@ -216,9 +218,6 @@ if [ ! -f "$STAMP" ]; then
     #   --enable-libopenh264       software (CPU) H.264 fallback for hosts with no
     #                              usable GPU encoder. BSD-2-Clause → LGPL-clean, so
     #                              it doesn't trip the forbidden-flag guardrail below.
-    #                              Self-compiled, so the AVC patent pool (majority
-    #                              expired; fully expires 2027-11-29) sits with the
-    #                              distributor — see README "Patent note".
     #   --enable-schannel          (mac --enable-securetransport → Windows Schannel)
     #   --target-os=mingw32        FFmpeg's identifier for the mingw-w64 target
     #                              regardless of bitness (legacy naming)
@@ -350,11 +349,16 @@ cp "$FFPROBE_BIN" "$OUT_DIR/ffprobe.exe"
 #   libstdc++-6.dll       Library Exception, which explicitly permits shipping
 #                         these alongside a GCC-compiled program without
 #                         imposing copyleft on that program.
+#   libopenh264-7.dll   — Cisco OpenH264 software H.264 encoder (BSD-2-Clause).
+#                         MSYS2 links it as a DLL (its import lib wins over the
+#                         static archive), so it ships next to ffmpeg.exe. The
+#                         glob tolerates openh264 soname bumps across rebuilds.
 for src in \
     /mingw64/bin/libvpl-2.dll \
     /mingw64/bin/libwinpthread-1.dll \
     /mingw64/bin/libgcc_s_seh-1.dll \
-    /mingw64/bin/libstdc++-6.dll; do
+    /mingw64/bin/libstdc++-6.dll \
+    /mingw64/bin/libopenh264-*.dll; do
     name="$(basename "$src")"
     if [ ! -f "$src" ]; then
         echo "✗ $name not found at $src" >&2
@@ -378,6 +382,15 @@ for wp_license in /mingw64/share/licenses/winpthreads/COPYING /mingw64/share/lic
         break
     fi
 done
+# OpenH264 (BSD-2-Clause) — must ship with the bundled libopenh264 DLL. Grab
+# whatever license file MSYS2 installs for the package, regardless of its name.
+openh264_license="$(ls /mingw64/share/licenses/openh264/* 2>/dev/null | head -n1 || true)"
+if [ -n "$openh264_license" ] && [ -f "$openh264_license" ]; then
+    cp "$openh264_license" "$OUT_DIR/LIBOPENH264-LICENSE.txt"
+else
+    echo "✗ openh264 license not found under /mingw64/share/licenses/openh264/ — required to ship the bundled libopenh264 DLL" >&2
+    exit 1
+fi
 # GCC runtime: ship the Runtime Library Exception (the term that makes
 # redistribution alongside our binary copyleft-free) plus the GPLv3 base text.
 for gcc_dir in /mingw64/share/licenses/gcc-libs /mingw64/share/licenses/gcc; do
