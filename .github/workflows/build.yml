@@ -127,9 +127,7 @@ jobs:
 
   build-linux:
     name: build ${{ matrix.target }}
-    # GitHub-hosted ubuntu-latest is x86_64 with apt — exactly what the Linux
-    # build needs. (Depot has Linux runners too if more throughput is wanted.)
-    runs-on: ubuntu-latest
+    runs-on: depot-ubuntu-24.04-8
     strategy:
       fail-fast: false
       matrix:
