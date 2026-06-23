@@ -12,12 +12,14 @@ on:
       - VERSION
       - scripts/build-macos.sh
       - scripts/build-windows.sh
+      - scripts/build-linux.sh
       - .github/workflows/build.yml
   pull_request:
     paths:
       - VERSION
       - scripts/build-macos.sh
       - scripts/build-windows.sh
+      - scripts/build-linux.sh
       - .github/workflows/build.yml
   workflow_dispatch:
 
@@ -123,12 +125,58 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  build-linux:
+    name: build ${{ matrix.target }}
+    # GitHub-hosted ubuntu-latest is x86_64 with apt — exactly what the Linux
+    # build needs. (Depot has Linux runners too if more throughput is wanted.)
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - x86_64-unknown-linux-gnu
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: read version metadata
+        id: meta
+        run: |
+          version="$(tr -d '[:space:]' < VERSION)"
+          build="${{ github.run_number }}"
+          echo "ffmpeg_version=${version}" >> "$GITHUB_OUTPUT"
+          echo "build_number=${build}" >> "$GITHUB_OUTPUT"
+          echo "tag=v${version}-${build}" >> "$GITHUB_OUTPUT"
+
+      # Install the toolchain + the -dev packages build-linux.sh verifies via
+      # pkg-config. These link dynamically; the Polycast Docker image provides
+      # their runtime counterparts (libgnutls30, libva2, libopenh264-7). All are
+      # in Debian/Ubuntu main — no non-free repo needed.
+      - name: install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential nasm git curl ca-certificates pkg-config xz-utils \
+            libgnutls28-dev libva-dev libopenh264-dev
+
+      - name: build
+        run: scripts/build-linux.sh --target ${{ matrix.target }}
+
+      - name: upload artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: ffmpeg-${{ steps.meta.outputs.ffmpeg_version }}-${{ matrix.target }}
+          path: |
+            dist/${{ matrix.target }}/ffmpeg-${{ steps.meta.outputs.ffmpeg_version }}-${{ matrix.target }}.tar.gz
+            dist/${{ matrix.target }}/ffmpeg-${{ steps.meta.outputs.ffmpeg_version }}-${{ matrix.target }}.tar.gz.sha256
+          if-no-files-found: error
+          retention-days: 7
+
   release:
     name: publish release
     # PRs run the build matrix to verify nothing's broken, but only pushes to
     # main produce a published release tag.
     if: github.event_name != 'pull_request'
-    needs: [build-macos, build-windows]
+    needs: [build-macos, build-windows, build-linux]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -181,6 +229,12 @@ jobs:
             echo
             echo '```'
             grep -E '^\s+--' scripts/build-windows.sh | sed 's/\\$//' | sed 's/^[[:space:]]*//' | sort -u
+            echo '```'
+            echo
+            echo "### Linux (\`x86_64-unknown-linux-gnu\`)"
+            echo
+            echo '```'
+            grep -E '^\s+--' scripts/build-linux.sh | sed 's/\\$//' | sed 's/^[[:space:]]*//' | sort -u
             echo '```'
             echo
             echo "## Artifacts"
