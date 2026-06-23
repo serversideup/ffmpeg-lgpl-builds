@@ -50,17 +50,18 @@ Currently supported targets:
 - `aarch64-apple-darwin` (macOS, Apple Silicon)
 - `x86_64-apple-darwin` (macOS, Intel — cross-compiled from Apple Silicon)
 - `x86_64-pc-windows-msvc` (Windows x64, built with mingw-w64 gcc via MSYS2 — the "msvc" in the triple is a consumer convention for "Windows x64"; the resulting PE executable is ABI-compatible regardless of caller toolchain)
+- `x86_64-unknown-linux-gnu` (Linux x64, for Docker). Unlike the desktop targets, this binary is **not** self-contained: it links gnutls / libva / libopenh264 dynamically against the libraries provided by the consuming container's distribution packages. Encoders: `h264_nvenc` (NVIDIA, runtime lib injected by the NVIDIA Container Toolkit), `h264_vaapi` (Intel iGPU + AMD), `libopenh264` (CPU fallback), `aac`. QSV/oneVPL is omitted for now — VAAPI covers Intel iGPUs.
 
 Planned (when downstream consumers need them):
 
-- `x86_64-unknown-linux-gnu`
+- `aarch64-unknown-linux-gnu` (Linux ARM, e.g. Ampere/Graviton VPSes)
 
 ## How to bump the FFmpeg version
 
 1. Look up the new upstream version at <https://ffmpeg.org/releases/>.
 2. Verify the tarball's SHA256 against the upstream signed checksum file.
 3. Edit `VERSION` to the new value, e.g. `8.2.0`.
-4. Add a case branch for the new version to **both** `scripts/build-macos.sh` and `scripts/build-windows.sh` with the pinned tarball SHA256 (defence-in-depth check on each platform).
+4. Add a case branch for the new version to **all three** of `scripts/build-macos.sh`, `scripts/build-windows.sh`, and `scripts/build-linux.sh` with the pinned tarball SHA256 (defence-in-depth check on each platform).
 5. Open a PR. CI runs the full matrix on the PR for verification.
 6. Merge to `main`. The push triggers the release workflow, producing `v<new-version>-<run-number>`.
 
