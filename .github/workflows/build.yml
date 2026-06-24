@@ -127,9 +127,15 @@ jobs:
 
   build-linux:
     name: build ${{ matrix.target }}
-    # Each target builds NATIVELY on its own-arch Depot runner (no cross-compile)
-    # — https://depot.dev/docs/github-actions/runner-types.
+    # Build INSIDE debian:bookworm so the binary links the SAME glibc (2.36) +
+    # library SONAMEs as the consuming Polycast runtime image
+    # (debian:bookworm-slim). Building on the ubuntu-24.04 runner directly
+    # produced binaries that required GLIBC_2.38 (Ubuntu 24.04 ships glibc 2.39),
+    # which won't run on bookworm — x86_64 dodged it, arm64 didn't. The container
+    # inherits the runner's arch, so each target still builds natively.
+    # https://depot.dev/docs/github-actions/runner-types
     runs-on: ${{ matrix.runner }}
+    container: debian:bookworm
     strategy:
       fail-fast: false
       matrix:
@@ -141,6 +147,10 @@ jobs:
             runner: depot-ubuntu-24.04-arm-8
             extra_apt: ""
     steps:
+      # The bare bookworm container has no git; actions/checkout needs it.
+      - name: install git for checkout
+        run: apt-get update && apt-get install -y --no-install-recommends git ca-certificates
+
       - uses: actions/checkout@v6
 
       - name: read version metadata
@@ -154,13 +164,13 @@ jobs:
 
       # The -dev packages build-linux.sh verifies via pkg-config; they link
       # dynamically and the Polycast Docker image provides the runtime
-      # counterparts. nasm (x86 SIMD) + libva-dev (VAAPI) are x86_64-only —
-      # arm64 is software (gnutls + openh264). All in Debian/Ubuntu main, no
-      # non-free repo needed.
+      # counterparts (same bookworm SONAMEs). nasm (x86 SIMD) + libva-dev (VAAPI)
+      # are x86_64-only — arm64 is software (gnutls + openh264). All in Debian
+      # main; no sudo (the container runs as root).
       - name: install build dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install -y \
+          apt-get update
+          apt-get install -y --no-install-recommends \
             build-essential git curl ca-certificates pkg-config xz-utils \
             libgnutls28-dev libopenh264-dev ${{ matrix.extra_apt }}
 
