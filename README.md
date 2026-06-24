@@ -51,10 +51,7 @@ Currently supported targets:
 - `x86_64-apple-darwin` (macOS, Intel — cross-compiled from Apple Silicon)
 - `x86_64-pc-windows-msvc` (Windows x64, built with mingw-w64 gcc via MSYS2 — the "msvc" in the triple is a consumer convention for "Windows x64"; the resulting PE executable is ABI-compatible regardless of caller toolchain)
 - `x86_64-unknown-linux-gnu` (Linux x64, for Docker). Unlike the desktop targets, this binary is **not** self-contained: it links gnutls / libva / libopenh264 dynamically against the libraries provided by the consuming container's distribution packages. Encoders: `h264_nvenc` (NVIDIA, runtime lib injected by the NVIDIA Container Toolkit), `h264_vaapi` (Intel iGPU + AMD), `libopenh264` (CPU fallback), `aac`. QSV/oneVPL is omitted for now — VAAPI covers Intel iGPUs.
-
-Planned (when downstream consumers need them):
-
-- `aarch64-unknown-linux-gnu` (Linux ARM, e.g. Ampere/Graviton VPSes)
+- `aarch64-unknown-linux-gnu` (Linux ARM, for Docker — e.g. Ampere/Graviton VPSes). **Software-only:** `libopenh264` (CPU) + native `aac`, gnutls TLS, plus stream passthrough. arm64 servers have no NVENC or Intel VAAPI, so there are no GPU encoders; same dynamic-link model as the x64 Linux build.
 
 ## How to bump the FFmpeg version
 

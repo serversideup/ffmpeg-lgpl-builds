@@ -59,12 +59,23 @@ if [ -z "$TARGET" ]; then
     exit 2
 fi
 
+# HW_ACCEL gates the GPU encoders. x86_64 servers get NVENC (NVIDIA) + VAAPI
+# (Intel/AMD); arm64 servers have neither in practice (Ampere/Graviton have no
+# GPU), so that build is software-encode + passthrough only — libopenh264 + aac,
+# the same gnutls TLS for rtmps egress. Each target builds NATIVELY on its own
+# arch (no cross-compilation); the CI matrix maps target → matching-arch runner.
 case "$TARGET" in
     x86_64-unknown-linux-gnu)
         FFMPEG_ARCH="x86_64"
+        HW_ACCEL="yes"
+        ;;
+    aarch64-unknown-linux-gnu)
+        FFMPEG_ARCH="aarch64"
+        HW_ACCEL="no"
         ;;
     *)
-        echo "unsupported target: $TARGET (only x86_64-unknown-linux-gnu for now)" >&2
+        echo "unsupported target: $TARGET" >&2
+        echo "usage: $0 --target <x86_64|aarch64>-unknown-linux-gnu" >&2
         exit 2
         ;;
 esac
@@ -97,16 +108,21 @@ TARBALL_URL="https://ffmpeg.org/releases/ffmpeg-${FFMPEG_VERSION}.tar.xz"
 OUT_DIR="${REPO_ROOT}/dist/${TARGET}"
 
 # ---- host check -------------------------------------------------------------
-if [ "$(uname -s)" != "Linux" ] || [ "$(uname -m)" != "x86_64" ]; then
-    echo "✗ host must be Linux x86_64; got $(uname -s)/$(uname -m)" >&2
-    echo "  run in a Debian/Ubuntu LTS container (see .github/workflows/build.yml)" >&2
+# Native build: the runner's arch must match the target. uname -m reports
+# x86_64 / aarch64, which is exactly FFMPEG_ARCH.
+if [ "$(uname -s)" != "Linux" ] || [ "$(uname -m)" != "$FFMPEG_ARCH" ]; then
+    echo "✗ host must be Linux ${FFMPEG_ARCH} for target ${TARGET}; got $(uname -s)/$(uname -m)" >&2
+    echo "  run on the matching-arch runner (see .github/workflows/build.yml)" >&2
     exit 1
 fi
 
 mkdir -p "$BUILD_ROOT" "$OUT_DIR" "$(dirname "$TARBALL")"
 
 # ---- prereq verification ----------------------------------------------------
-for tool in gcc make nasm git pkg-config curl tar sha256sum strings ldd; do
+# nasm is x86 SIMD assembly only; arm64 uses the GNU assembler shipped with gcc.
+REQUIRED_TOOLS="gcc make git pkg-config curl tar sha256sum strings ldd"
+[ "$FFMPEG_ARCH" = "x86_64" ] && REQUIRED_TOOLS="${REQUIRED_TOOLS} nasm"
+for tool in $REQUIRED_TOOLS; do
     if ! command -v "$tool" >/dev/null 2>&1; then
         echo "✗ $tool not found in PATH" >&2
         echo "  install the build deps; see .github/workflows/build.yml" >&2
@@ -114,26 +130,31 @@ for tool in gcc make nasm git pkg-config curl tar sha256sum strings ldd; do
     fi
 done
 
-# Pin nv-codec-headers (the NVENC/NVDEC API stubs) from source, exactly as the
+# NVENC headers + VAAPI are x86_64-only here (arm64 ships software-encode). Pin
+# nv-codec-headers (the NVENC/NVDEC API stubs) from source, exactly as the
 # Windows build does. The header version sets the MINIMUM NVIDIA driver NVENC
 # accepts at runtime; n11.1.5.3 maps to a Linux driver floor of 470.57.02
 # (~mid-2021) while still carrying every NVENC feature Polycast's H.264 argv
 # uses. Keep this in lockstep with build-windows.sh.
-NVCODEC_TAG="n11.1.5.3"
-NVCODEC_DIR="${BUILD_ROOT}/nv-codec-headers"
-if [ ! -d "$NVCODEC_DIR/.git" ]; then
-    rm -rf "$NVCODEC_DIR"
-    git clone --depth 1 --branch "$NVCODEC_TAG" \
-        https://github.com/FFmpeg/nv-codec-headers.git "$NVCODEC_DIR"
+if [ "$HW_ACCEL" = "yes" ]; then
+    NVCODEC_TAG="n11.1.5.3"
+    NVCODEC_DIR="${BUILD_ROOT}/nv-codec-headers"
+    if [ ! -d "$NVCODEC_DIR/.git" ]; then
+        rm -rf "$NVCODEC_DIR"
+        git clone --depth 1 --branch "$NVCODEC_TAG" \
+            https://github.com/FFmpeg/nv-codec-headers.git "$NVCODEC_DIR"
+    fi
+    echo "▶ installing pinned nv-codec-headers ${NVCODEC_TAG} (min NVIDIA driver 470.57.02 Linux)"
+    make -C "$NVCODEC_DIR" PREFIX="$PREFIX" install >/dev/null
+    export PKG_CONFIG_PATH="${PREFIX}/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
 fi
-echo "▶ installing pinned nv-codec-headers ${NVCODEC_TAG} (min NVIDIA driver 470.57.02 Linux)"
-make -C "$NVCODEC_DIR" PREFIX="$PREFIX" install >/dev/null
-export PKG_CONFIG_PATH="${PREFIX}/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
 
 # External deps come from the distro (apt); confirm pkg-config sees each before
 # we configure, so a missing -dev package fails here with a clear message rather
-# than as an opaque configure error.
-for pcfile in gnutls libva libva-drm ffnvcodec openh264; do
+# than as an opaque configure error. arm64 needs only gnutls + openh264 (no GPU).
+PC_DEPS="gnutls openh264"
+[ "$HW_ACCEL" = "yes" ] && PC_DEPS="gnutls libva libva-drm ffnvcodec openh264"
+for pcfile in $PC_DEPS; do
     if ! pkg-config --exists "$pcfile" 2>/dev/null; then
         echo "✗ pkg-config can't find $pcfile" >&2
         case "$pcfile" in
@@ -179,29 +200,38 @@ cd "$SOURCE_DIR"
 
 STAMP="${SOURCE_DIR}/.configured-for-${TARGET}"
 if [ ! -f "$STAMP" ]; then
-    echo "▶ configuring (LGPL only, NVENC + VAAPI + libopenh264 CPU fallback, gnutls TLS) for ${TARGET}"
-    # Flag rationale (deltas from build-macos.sh / build-windows.sh in parens):
+    # Encoder + filter sets diverge by arch; everything else (license discipline,
+    # static link, gnutls TLS, the mux/demux/protocol set) is shared.
     #   --disable-gpl / --nonfree / --version3 / --autodetect
-    #                              same — license discipline + no surprise deps
+    #                              license discipline + no surprise deps
     #   --enable-static --disable-shared
-    #                              FFmpeg's own libs are static *into* the binary;
-    #                              external deps (gnutls/va/openh264) still link
+    #                              FFmpeg's own libs static *into* the binary;
+    #                              external deps (gnutls/va/openh264) link
     #                              dynamically against the image's shared objects.
-    #   --enable-ffnvcodec / --enable-nvenc
-    #                              NVIDIA NVENC. The runtime libnvidia-encode.so is
-    #                              dlopen'd and injected by the NVIDIA Container
-    #                              Toolkit, so it isn't a build or image dependency.
-    #   --enable-vaapi             Intel iGPU + AMD via libva (h264_vaapi). The
-    #                              one encoder that needs the hwupload filter chain.
-    #   --enable-libopenh264       BSD-2-Clause CPU fallback. LGPL-clean, so it
-    #                              doesn't trip the forbidden-flag guardrail below.
+    #   --enable-libopenh264       BSD-2-Clause CPU encoder. LGPL-clean.
     #   --enable-gnutls            (mac securetransport / win schannel → Linux
     #                              gnutls) TLS for rtmps:// egress. LGPLv2.1+.
-    #   --enable-filter=…,hwupload,hwmap,scale_vaapi
-    #                              extra filters VAAPI needs to move frames onto
-    #                              the GPU (the software path uses scale/format).
-    # NOTE: oneVPL/QSV (--enable-libvpl) is intentionally omitted for V1 — VAAPI
-    # covers Intel iGPUs; add libvpl later as a fast-follow.
+    # x86_64 only (HW_ACCEL=yes):
+    #   --enable-ffnvcodec/nvenc   NVIDIA NVENC; libnvidia-encode.so is dlopen'd +
+    #                              injected by the NVIDIA Container Toolkit, so not
+    #                              a build/image dep.
+    #   --enable-vaapi             Intel iGPU + AMD via libva, plus the
+    #                              hwupload/hwmap/scale_vaapi filters it needs.
+    # arm64 omits all GPU paths — Ampere/Graviton have no encoder; it ships
+    # passthrough + software (libopenh264) only. (QSV/oneVPL stays omitted on both
+    # for V1.)
+    HWACCEL_CONFIGURE=()
+    ENCODERS="libopenh264,aac"
+    EXTRA_FILTERS=""
+    ACCEL_DESC="software (libopenh264) + passthrough only"
+    if [ "$HW_ACCEL" = "yes" ]; then
+        HWACCEL_CONFIGURE=(--enable-ffnvcodec --enable-nvenc --enable-vaapi)
+        ENCODERS="h264_nvenc,hevc_nvenc,h264_vaapi,hevc_vaapi,libopenh264,aac"
+        EXTRA_FILTERS=",hwupload,hwmap,scale_vaapi"
+        ACCEL_DESC="NVENC + VAAPI + libopenh264 CPU fallback"
+    fi
+
+    echo "▶ configuring (LGPL only, ${ACCEL_DESC}, gnutls TLS) for ${TARGET}"
     ./configure \
         --prefix="$PREFIX" \
         --disable-gpl --disable-nonfree --disable-version3 \
@@ -210,19 +240,17 @@ if [ ! -f "$STAMP" ]; then
         --disable-programs --enable-ffmpeg --enable-ffprobe \
         --disable-doc --disable-htmlpages --disable-manpages --disable-podpages --disable-txtpages \
         --disable-debug \
-        --enable-ffnvcodec \
-        --enable-nvenc \
-        --enable-vaapi \
         --enable-libopenh264 \
         --enable-gnutls \
-        --enable-encoder=h264_nvenc,hevc_nvenc,h264_vaapi,hevc_vaapi,libopenh264,aac \
+        "${HWACCEL_CONFIGURE[@]}" \
+        --enable-encoder="$ENCODERS" \
         --enable-decoder=h264,hevc,aac,mp3,pcm_s16le,pcm_s24le,pcm_f32le \
         --enable-muxer=flv,mp4,mov \
         --enable-demuxer=flv,mpegts,mov,mp4 \
         --enable-parser=h264,hevc,aac \
         --enable-protocol=rtmp,rtmps,tls,tcp,udp,file,pipe \
         --enable-bsf=aac_adtstoasc,h264_mp4toannexb,hevc_mp4toannexb \
-        --enable-filter=scale,fps,format,aresample,asetnsamples,anull,null,copy,hwupload,hwmap,scale_vaapi \
+        --enable-filter="scale,fps,format,aresample,asetnsamples,anull,null,copy${EXTRA_FILTERS}" \
         --arch="$FFMPEG_ARCH" \
         --cc=gcc \
         --extra-cflags="-O3"
@@ -280,7 +308,9 @@ echo "  ✓ no GPL/non-free shared libraries in the link"
 
 # Confirm each expected encoder ended up baked in (string-scan, no execution).
 SYMS="$(strings "$BIN")"
-for needed in 'h264_nvenc' 'h264_vaapi' 'libopenh264' 'aac '; do
+NEEDED_ENCODERS=(libopenh264 'aac ')
+[ "$HW_ACCEL" = "yes" ] && NEEDED_ENCODERS=(h264_nvenc h264_vaapi libopenh264 'aac ')
+for needed in "${NEEDED_ENCODERS[@]}"; do
     case "$SYMS" in
         *"$needed"*) ;;
         *)
@@ -289,7 +319,11 @@ for needed in 'h264_nvenc' 'h264_vaapi' 'libopenh264' 'aac '; do
             ;;
     esac
 done
-echo "  ✓ nvenc + vaapi + libopenh264 + aac encoders present"
+if [ "$HW_ACCEL" = "yes" ]; then
+    echo "  ✓ nvenc + vaapi + libopenh264 + aac encoders present"
+else
+    echo "  ✓ libopenh264 + aac encoders present (software build)"
+fi
 
 # Native host: exercise both binaries end-to-end.
 if ! "$BIN" -hide_banner -version >/dev/null; then

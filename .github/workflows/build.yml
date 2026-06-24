@@ -127,12 +127,19 @@ jobs:
 
   build-linux:
     name: build ${{ matrix.target }}
-    runs-on: depot-ubuntu-24.04-8
+    # Each target builds NATIVELY on its own-arch Depot runner (no cross-compile)
+    # — https://depot.dev/docs/github-actions/runner-types.
+    runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
       matrix:
-        target:
-          - x86_64-unknown-linux-gnu
+        include:
+          - target: x86_64-unknown-linux-gnu
+            runner: depot-ubuntu-24.04-8
+            extra_apt: nasm libva-dev
+          - target: aarch64-unknown-linux-gnu
+            runner: depot-ubuntu-24.04-arm-8
+            extra_apt: ""
     steps:
       - uses: actions/checkout@v6
 
@@ -145,16 +152,17 @@ jobs:
           echo "build_number=${build}" >> "$GITHUB_OUTPUT"
           echo "tag=v${version}-${build}" >> "$GITHUB_OUTPUT"
 
-      # Install the toolchain + the -dev packages build-linux.sh verifies via
-      # pkg-config. These link dynamically; the Polycast Docker image provides
-      # their runtime counterparts (libgnutls30, libva2, libopenh264-7). All are
-      # in Debian/Ubuntu main — no non-free repo needed.
+      # The -dev packages build-linux.sh verifies via pkg-config; they link
+      # dynamically and the Polycast Docker image provides the runtime
+      # counterparts. nasm (x86 SIMD) + libva-dev (VAAPI) are x86_64-only —
+      # arm64 is software (gnutls + openh264). All in Debian/Ubuntu main, no
+      # non-free repo needed.
       - name: install build dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            build-essential nasm git curl ca-certificates pkg-config xz-utils \
-            libgnutls28-dev libva-dev libopenh264-dev
+            build-essential git curl ca-certificates pkg-config xz-utils \
+            libgnutls28-dev libopenh264-dev ${{ matrix.extra_apt }}
 
       - name: build
         run: scripts/build-linux.sh --target ${{ matrix.target }}
@@ -229,11 +237,12 @@ jobs:
             grep -E '^\s+--' scripts/build-windows.sh | sed 's/\\$//' | sed 's/^[[:space:]]*//' | sort -u
             echo '```'
             echo
-            echo "### Linux (\`x86_64-unknown-linux-gnu\`)"
+            echo "### Linux (\`x86_64-unknown-linux-gnu\` + \`aarch64-unknown-linux-gnu\`)"
             echo
-            echo '```'
-            grep -E '^\s+--' scripts/build-linux.sh | sed 's/\\$//' | sed 's/^[[:space:]]*//' | sort -u
-            echo '```'
+            echo "- x86_64: NVENC + VAAPI + libopenh264 + native aac, gnutls TLS."
+            echo "- arm64: libopenh264 + native aac (software) + passthrough, gnutls TLS — no GPU encoders (Ampere/Graviton have none)."
+            echo
+            echo "Both are LGPL-only. The exact \`./configure\` line for each target is recorded in that tarball's \`SOURCE.txt\`."
             echo
             echo "## Artifacts"
             echo
