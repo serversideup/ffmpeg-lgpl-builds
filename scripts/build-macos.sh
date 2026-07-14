@@ -88,12 +88,30 @@ case "$FFMPEG_VERSION" in
         ;;
 esac
 
+# OpenSSL provides FFmpeg's TLS backend (--enable-openssl) for rtmps/https.
+# Apache-2.0 — in none of FFmpeg's GPL/NONFREE/VERSION3 lists since FFmpeg
+# relicensed its OpenSSL 3 handling (2023), so no banned flag is needed.
+# Replaces SecureTransport, and NOT libtls/mbedtls, for measured reasons:
+# RTMP probes its transport with nonblocking 1-byte reads (rtmpproto.c), and
+# the securetransport + libtls backends turn that probe into a blocking read
+# that waits for the server's next ack — RTMPS throughput collapses to ~2.5%
+# of real time (identical 0.025x measured on both; openssl: 5.1x). mbedtls
+# requires --enable-version3. Field- and bench-verified 2026-07; the rtmps
+# throughput gate below keeps this from regressing. SHA256 from the official
+# release's published .sha256 asset.
+OPENSSL_VERSION="3.5.7"
+OPENSSL_SHA256="a8c0d28a529ca480f9f36cf5792e2cd21984552a3c8e4aa11a24aa31aeac98e8"
+OPENSSL_TARBALL_URL="https://github.com/openssl/openssl/releases/download/openssl-${OPENSSL_VERSION}/openssl-${OPENSSL_VERSION}.tar.gz"
+
 BUILD_ROOT="${REPO_ROOT}/build/${TARGET}"
 TARBALL="${REPO_ROOT}/build/ffmpeg-${FFMPEG_VERSION}.tar.xz"
 SOURCE_DIR="${BUILD_ROOT}/ffmpeg-${FFMPEG_VERSION}"
 PREFIX="${BUILD_ROOT}/install"
 TARBALL_URL="https://ffmpeg.org/releases/ffmpeg-${FFMPEG_VERSION}.tar.xz"
 OUT_DIR="${REPO_ROOT}/dist/${TARGET}"
+OPENSSL_TARBALL="${REPO_ROOT}/build/openssl-${OPENSSL_VERSION}.tar.gz"
+OPENSSL_SOURCE_DIR="${BUILD_ROOT}/openssl-${OPENSSL_VERSION}"
+DEPS_PREFIX="${BUILD_ROOT}/deps"
 
 # ---- host check -------------------------------------------------------------
 if [ "$(uname -s)" != "Darwin" ] || [ "$(uname -m)" != "arm64" ]; then
@@ -131,6 +149,62 @@ else
     echo "✓ source tree present at $SOURCE_DIR"
 fi
 
+# ---- openssl (TLS backend) ----------------------------------------------------
+# pkg-config is how FFmpeg's configure discovers openssl (check_pkg_config).
+if ! command -v pkg-config >/dev/null 2>&1; then
+    echo "✗ pkg-config not found in PATH (required for --enable-openssl)" >&2
+    echo "  install: brew install pkg-config" >&2
+    exit 1
+fi
+
+if [ ! -f "$OPENSSL_TARBALL" ]; then
+    echo "▶ downloading OpenSSL ${OPENSSL_VERSION} source"
+    curl -fL "$OPENSSL_TARBALL_URL" -o "$OPENSSL_TARBALL.partial"
+    mv "$OPENSSL_TARBALL.partial" "$OPENSSL_TARBALL"
+else
+    echo "✓ OpenSSL tarball cached at $OPENSSL_TARBALL"
+fi
+
+echo "▶ verifying OpenSSL checksum"
+OPENSSL_ACTUAL_SHA256="$(shasum -a 256 "$OPENSSL_TARBALL" | awk '{print $1}')"
+if [ "$OPENSSL_ACTUAL_SHA256" != "$OPENSSL_SHA256" ]; then
+    echo "✗ checksum mismatch for $OPENSSL_TARBALL" >&2
+    echo "   expected: $OPENSSL_SHA256" >&2
+    echo "   actual:   $OPENSSL_ACTUAL_SHA256" >&2
+    exit 1
+fi
+echo "  ✓ sha256 ok"
+
+# Static-only install: FFmpeg links libssl/libcrypto .a files into the final
+# binary, so the system-frameworks-only otool -L guard still holds.
+if [ ! -f "$DEPS_PREFIX/lib/libssl.a" ]; then
+    if [ ! -d "$OPENSSL_SOURCE_DIR" ]; then
+        echo "▶ extracting OpenSSL"
+        tar -xf "$OPENSSL_TARBALL" -C "$BUILD_ROOT"
+    fi
+    echo "▶ building OpenSSL ${OPENSSL_VERSION} (static) for ${TARGET} — takes a few minutes"
+    OPENSSL_TARGET="darwin64-arm64-cc"
+    if [ "$CROSS" = "1" ]; then
+        OPENSSL_TARGET="darwin64-x86_64-cc"
+    fi
+    (
+        cd "$OPENSSL_SOURCE_DIR"
+        ./Configure "$OPENSSL_TARGET" \
+            --prefix="$DEPS_PREFIX" --libdir=lib \
+            no-shared no-tests no-docs no-apps \
+            -mmacosx-version-min=12.0 \
+            >/dev/null
+        make -j"$(sysctl -n hw.ncpu)" >/dev/null 2>&1
+        # install_sw = libs + headers + pkg-config files, no docs/scripts.
+        make install_sw >/dev/null
+    )
+    echo "  ✓ OpenSSL installed to $DEPS_PREFIX"
+else
+    echo "✓ OpenSSL already built at $DEPS_PREFIX"
+fi
+
+export PKG_CONFIG_PATH="${DEPS_PREFIX}/lib/pkgconfig"
+
 # ---- configure --------------------------------------------------------------
 cd "$SOURCE_DIR"
 
@@ -165,7 +239,13 @@ if [ ! -f "$STAMP" ]; then
     #                              ship ffmpeg + ffprobe; no ffplay (drags in SDL)
     #   --enable-videotoolbox      Apple hardware encoder/decoder framework
     #   --enable-audiotoolbox      Apple hardware audio framework
-    #   --enable-securetransport   TLS for rtmps/https without OpenSSL
+    #   --enable-openssl           TLS for rtmps/https via static OpenSSL 3.
+    #                              NOT securetransport or libtls: both turn
+    #                              RTMP's nonblocking server-message probe into
+    #                              a blocking read, collapsing RTMPS throughput
+    #                              to ~2.5% of real time (bench-verified
+    #                              2026-07; openssl measured 5.1x on the same
+    #                              case). Backends conflict; exactly one is set.
     EXTRA_CONFIGURE=()
     if [ "$CROSS" = "1" ]; then
         EXTRA_CONFIGURE+=(--enable-cross-compile)
@@ -180,7 +260,8 @@ if [ ! -f "$STAMP" ]; then
         --disable-doc --disable-htmlpages --disable-manpages --disable-podpages --disable-txtpages \
         --disable-debug \
         --enable-videotoolbox --enable-audiotoolbox \
-        --enable-securetransport \
+        --enable-openssl \
+        --pkg-config-flags=--static \
         --enable-encoder=h264_videotoolbox,hevc_videotoolbox,aac \
         --enable-decoder=h264,hevc,aac,mp3,pcm_s16le,pcm_s24le,pcm_f32le \
         --enable-muxer=flv,mp4,mov \
@@ -259,6 +340,21 @@ for forbidden in '--enable-gpl' '--enable-nonfree' '--enable-version3'; do
 done
 echo "  ✓ no GPL / non-free / v3 flags"
 
+# TLS backend must be openssl — a build that silently dropped it would ship
+# with rtmps/https broken, and securetransport/libtls stall RTMPS (see the
+# configure comment above).
+if ! echo "$CONFIG_LINE" | grep -q -- '--enable-openssl'; then
+    echo "✗ binary built without --enable-openssl — rtmps/https would be broken" >&2
+    exit 1
+fi
+for stalling in '--enable-securetransport' '--enable-libtls'; do
+    if echo "$CONFIG_LINE" | grep -q -- "$stalling"; then
+        echo "✗ binary has $stalling — that backend stalls RTMPS; refusing to ship" >&2
+        exit 1
+    fi
+done
+echo "  ✓ TLS backend is openssl"
+
 # Confirm encoders we depend on (string-scan, no execution needed).
 # Capture strings output once and pattern-match without piping into grep -q.
 # (grep -q exits early on match, which causes strings to die on EPIPE; with
@@ -314,6 +410,86 @@ if [ "$CROSS" = "0" ]; then
     echo "  ✓ ffprobe runs natively"
 fi
 
+# ---- rtmps throughput gate (native target only) -------------------------------
+# The regression this catches: a TLS backend whose handshake succeeds but whose
+# sustained write path stalls. SecureTransport shipped RTMPS at ~2% of real
+# time for months because nothing measured throughput — a handshake-only test
+# passes on a backend that is unusable for streaming. Pushes 10s of 1080p60 at
+# ~8 Mbps to a local MediaMTX over rtmps (self-signed cert) and requires the
+# encode to hold >= 0.9x real time. A plain-rtmp control run first separates a
+# TLS regression from an encoder/runner problem.
+if [ "$CROSS" = "0" ]; then
+    MEDIAMTX_VERSION="1.18.2"
+    MEDIAMTX_SHA256="6a9273ae22a9d0ba85d00d03fdd1b13b9eeaf129ea8b90999ec746367f20449a" # darwin_arm64
+    MEDIAMTX_TARBALL="${REPO_ROOT}/build/mediamtx_v${MEDIAMTX_VERSION}_darwin_arm64.tar.gz"
+    MEDIAMTX_URL="https://github.com/bluenviron/mediamtx/releases/download/v${MEDIAMTX_VERSION}/mediamtx_v${MEDIAMTX_VERSION}_darwin_arm64.tar.gz"
+    SMOKE_DIR="${BUILD_ROOT}/rtmps-smoke"
+
+    echo "▶ rtmps throughput gate"
+    if [ ! -f "$MEDIAMTX_TARBALL" ]; then
+        curl -fL "$MEDIAMTX_URL" -o "$MEDIAMTX_TARBALL.partial"
+        mv "$MEDIAMTX_TARBALL.partial" "$MEDIAMTX_TARBALL"
+    fi
+    MEDIAMTX_ACTUAL="$(shasum -a 256 "$MEDIAMTX_TARBALL" | awk '{print $1}')"
+    if [ "$MEDIAMTX_ACTUAL" != "$MEDIAMTX_SHA256" ]; then
+        echo "✗ checksum mismatch for $MEDIAMTX_TARBALL" >&2
+        exit 1
+    fi
+
+    rm -rf "$SMOKE_DIR"
+    mkdir -p "$SMOKE_DIR"
+    tar -xf "$MEDIAMTX_TARBALL" -C "$SMOKE_DIR" mediamtx
+    openssl req -x509 -newkey rsa:2048 -keyout "$SMOKE_DIR/key.pem" \
+        -out "$SMOKE_DIR/cert.pem" -days 1 -nodes -subj "/CN=localhost" 2>/dev/null
+    cat > "$SMOKE_DIR/mediamtx.yml" <<'SMOKEEOF'
+logLevel: error
+api: no
+rtsp: no
+hls: no
+webrtc: no
+srt: no
+rtmp: yes
+rtmpAddress: :13935
+rtmpEncryption: optional
+rtmpsAddress: :13936
+rtmpServerCert: cert.pem
+rtmpServerKey: key.pem
+paths:
+  smoke:
+SMOKEEOF
+    ( cd "$SMOKE_DIR" && ./mediamtx mediamtx.yml > mediamtx.log 2>&1 ) &
+    MEDIAMTX_PID=$!
+    trap 'kill $MEDIAMTX_PID 2>/dev/null || true' EXIT
+    sleep 2
+
+    smoke_push() { # $1 = output URL; echoes the final encode speed multiplier
+        "$BIN" -hide_banner -loglevel warning -stats \
+            -f lavfi -i testsrc2=size=1920x1080:rate=60 -t 10 \
+            -c:v h264_videotoolbox -allow_sw 1 -b:v 8000k -maxrate 8000k -bufsize 8000k \
+            -f flv "$1" 2>&1 |
+            grep -o 'speed= *[0-9.]*x' | tail -1 | grep -o '[0-9.]*'
+    }
+
+    RTMP_SPEED="$(smoke_push rtmp://127.0.0.1:13935/smoke || echo 0)"
+    if ! awk "BEGIN{exit !($RTMP_SPEED >= 0.9)}"; then
+        echo "✗ plain-rtmp control push ran at ${RTMP_SPEED:-0}x (< 0.9x) — runner/encoder problem, cannot evaluate TLS" >&2
+        exit 1
+    fi
+    echo "  ✓ rtmp control: ${RTMP_SPEED}x"
+
+    RTMPS_SPEED="$(smoke_push rtmps://127.0.0.1:13936/smoke || echo 0)"
+    if ! awk "BEGIN{exit !($RTMPS_SPEED >= 0.9)}"; then
+        echo "✗ rtmps push ran at ${RTMPS_SPEED:-0}x (< 0.9x) — TLS write path is stalling; refusing to ship" >&2
+        exit 1
+    fi
+    echo "  ✓ rtmps throughput: ${RTMPS_SPEED}x"
+
+    kill $MEDIAMTX_PID 2>/dev/null || true
+    trap - EXIT
+else
+    echo "▶ rtmps throughput gate skipped (cross-built binary can't run on this host)"
+fi
+
 # ---- stage ------------------------------------------------------------------
 echo "▶ staging to $OUT_DIR"
 rm -rf "$OUT_DIR"
@@ -325,6 +501,9 @@ chmod +x "$OUT_DIR/ffprobe"
 
 cp "$SOURCE_DIR/COPYING.LGPLv2.1" "$OUT_DIR/COPYING.LGPLv2.1"
 [ -f "$SOURCE_DIR/LICENSE.md" ] && cp "$SOURCE_DIR/LICENSE.md" "$OUT_DIR/FFMPEG-LICENSE.md"
+# OpenSSL is statically linked in; Apache-2.0 requires the notice to travel
+# with it.
+cp "$OPENSSL_SOURCE_DIR/LICENSE.txt" "$OUT_DIR/OPENSSL-LICENSE"
 
 CONFIG_CLEAN="$(echo "$CONFIG_LINE" | sed -E 's/^.*configuration:[[:space:]]*//')"
 
@@ -335,6 +514,11 @@ SHA256:         ${SHA256}
 Built on:       $(date -u +%Y-%m-%dT%H:%M:%SZ)
 Built for:      ${TARGET}
 Configuration:  ${CONFIG_CLEAN}
+
+Statically linked third-party libraries:
+  OpenSSL ${OPENSSL_VERSION} (Apache-2.0 license, see OPENSSL-LICENSE)
+  Source tarball: ${OPENSSL_TARBALL_URL}
+  SHA256:         ${OPENSSL_SHA256}
 
 This binary is LGPL-2.1-only. Per LGPL § 6, downstream end users are entitled
 to the complete corresponding source code for this FFmpeg build. The source
@@ -349,7 +533,7 @@ EOF
 # ---- package ----------------------------------------------------------------
 ARCHIVE="ffmpeg-${FFMPEG_VERSION}-${TARGET}.tar.gz"
 echo "▶ packaging $ARCHIVE"
-ARCHIVE_FILES=(ffmpeg ffprobe COPYING.LGPLv2.1 SOURCE.txt)
+ARCHIVE_FILES=(ffmpeg ffprobe COPYING.LGPLv2.1 SOURCE.txt OPENSSL-LICENSE)
 if [ -f "$OUT_DIR/FFMPEG-LICENSE.md" ]; then
     ARCHIVE_FILES+=(FFMPEG-LICENSE.md)
 fi

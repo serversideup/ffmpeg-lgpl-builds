@@ -42,8 +42,10 @@ Tag format: `v<ffmpeg-version>-<run-number>`, e.g. `v8.1.1-42`, where `<run-numb
 
 Per release, per target, the published artifacts are:
 
-- `ffmpeg-<version>-<triple>.tar.gz` — contains the `ffmpeg` (or `ffmpeg.exe`) and `ffprobe` binaries, `COPYING.LGPLv2.1`, and `SOURCE.txt` (provenance record). Windows builds additionally include `libvpl-2.dll` (Intel oneVPL dispatcher, MIT-licensed) + `LIBVPL-LICENSE.txt`, `libwinpthread-1.dll` (mingw-w64 pthread runtime, BSD-style permissive) + `LIBWINPTHREAD-LICENSE.txt`, and `libopenh264-7.dll` (Cisco OpenH264 software encoder, BSD-2-Clause) + `LIBOPENH264-LICENSE.txt`.
+- `ffmpeg-<version>-<triple>.tar.gz` — contains the `ffmpeg` (or `ffmpeg.exe`) and `ffprobe` binaries, `COPYING.LGPLv2.1`, and `SOURCE.txt` (provenance record). macOS builds additionally include `OPENSSL-LICENSE` (OpenSSL 3 is statically linked in as the TLS backend, Apache-2.0-licensed). Windows builds additionally include `libvpl-2.dll` (Intel oneVPL dispatcher, MIT-licensed) + `LIBVPL-LICENSE.txt`, `libwinpthread-1.dll` (mingw-w64 pthread runtime, BSD-style permissive) + `LIBWINPTHREAD-LICENSE.txt`, and `libopenh264-7.dll` (Cisco OpenH264 software encoder, BSD-2-Clause) + `LIBOPENH264-LICENSE.txt`.
 - `ffmpeg-<version>-<triple>.tar.gz.sha256`
+
+TLS backend per platform (for `rtmps`/`https`): **macOS = OpenSSL 3** (Apache-2.0, statically linked), **Windows = Schannel** (system SSPI), **Linux = GnuTLS** (dynamic, distro-provided). macOS deliberately does not use SecureTransport or LibreSSL/libtls: FFmpeg's RTMP layer probes its transport with nonblocking reads, and both of those backends turn the probe into a blocking read that waits on the server's next ack — RTMPS throughput collapses to ~2.5% of real time (measured identically on both; OpenSSL and GnuTLS handle the probe correctly). The macOS and Linux builds gate every ship on an RTMPS throughput smoke test: 10s of 1080p60 at ~8 Mbps pushed to a local MediaMTX over TLS must sustain ≥ 0.9x real time — a handshake-only check passes on a backend that is unusable for streaming.
 
 Currently supported targets:
 

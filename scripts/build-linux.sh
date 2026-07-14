@@ -336,6 +336,95 @@ if ! "$FFPROBE_BIN" -hide_banner -version >/dev/null; then
 fi
 echo "  ✓ ffmpeg + ffprobe run"
 
+# ---- rtmps throughput gate ----------------------------------------------------
+# The regression this catches: a TLS backend whose handshake succeeds but whose
+# sustained write path stalls (macOS SecureTransport shipped RTMPS at ~2% of
+# real time for months because nothing measured throughput). Pushes 10s of
+# 1080p60 at ~8 Mbps to a local MediaMTX over rtmps (self-signed cert) and
+# requires the encode to hold >= 0.9x real time. A plain-rtmp control run first
+# separates a TLS regression from an encoder/runner problem.
+if ! command -v openssl >/dev/null 2>&1; then
+    echo "✗ openssl not found (needed to generate the rtmps smoke-test cert)" >&2
+    echo "  install: apt-get install -y openssl" >&2
+    exit 1
+fi
+MEDIAMTX_VERSION="1.18.2"
+case "$FFMPEG_ARCH" in
+    x86_64)
+        MEDIAMTX_ASSET="mediamtx_v${MEDIAMTX_VERSION}_linux_amd64.tar.gz"
+        MEDIAMTX_SHA256="73ed27c292e05ceb4990dcb34531f01872dfff5374b7515c45a202e0abf47706"
+        ;;
+    aarch64)
+        MEDIAMTX_ASSET="mediamtx_v${MEDIAMTX_VERSION}_linux_arm64.tar.gz"
+        MEDIAMTX_SHA256="c78aa7a1bdab94b2b02be364661f17802143215dba37e1fa67c3e0849248b485"
+        ;;
+esac
+MEDIAMTX_TARBALL="${REPO_ROOT}/build/${MEDIAMTX_ASSET}"
+MEDIAMTX_URL="https://github.com/bluenviron/mediamtx/releases/download/v${MEDIAMTX_VERSION}/${MEDIAMTX_ASSET}"
+SMOKE_DIR="${BUILD_ROOT}/rtmps-smoke"
+
+echo "▶ rtmps throughput gate"
+if [ ! -f "$MEDIAMTX_TARBALL" ]; then
+    curl -fL "$MEDIAMTX_URL" -o "$MEDIAMTX_TARBALL.partial"
+    mv "$MEDIAMTX_TARBALL.partial" "$MEDIAMTX_TARBALL"
+fi
+MEDIAMTX_ACTUAL="$(sha256sum "$MEDIAMTX_TARBALL" | awk '{print $1}')"
+if [ "$MEDIAMTX_ACTUAL" != "$MEDIAMTX_SHA256" ]; then
+    echo "✗ checksum mismatch for $MEDIAMTX_TARBALL" >&2
+    exit 1
+fi
+
+rm -rf "$SMOKE_DIR"
+mkdir -p "$SMOKE_DIR"
+tar -xf "$MEDIAMTX_TARBALL" -C "$SMOKE_DIR" mediamtx
+openssl req -x509 -newkey rsa:2048 -keyout "$SMOKE_DIR/key.pem" \
+    -out "$SMOKE_DIR/cert.pem" -days 1 -nodes -subj "/CN=localhost" 2>/dev/null
+cat > "$SMOKE_DIR/mediamtx.yml" <<'SMOKEEOF'
+logLevel: error
+api: no
+rtsp: no
+hls: no
+webrtc: no
+srt: no
+rtmp: yes
+rtmpAddress: :13935
+rtmpEncryption: optional
+rtmpsAddress: :13936
+rtmpServerCert: cert.pem
+rtmpServerKey: key.pem
+paths:
+  smoke:
+SMOKEEOF
+( cd "$SMOKE_DIR" && ./mediamtx mediamtx.yml > mediamtx.log 2>&1 ) &
+MEDIAMTX_PID=$!
+trap 'kill $MEDIAMTX_PID 2>/dev/null || true' EXIT
+sleep 2
+
+smoke_push() { # $1 = output URL; echoes the final encode speed multiplier
+    "$BIN" -hide_banner -loglevel warning -stats \
+        -f lavfi -i testsrc2=size=1920x1080:rate=60 -t 10 \
+        -c:v libopenh264 -b:v 8000k -maxrate 8000k -bufsize 8000k \
+        -f flv "$1" 2>&1 |
+        grep -o 'speed= *[0-9.]*x' | tail -1 | grep -o '[0-9.]*'
+}
+
+RTMP_SPEED="$(smoke_push rtmp://127.0.0.1:13935/smoke || echo 0)"
+if ! awk "BEGIN{exit !($RTMP_SPEED >= 0.9)}"; then
+    echo "✗ plain-rtmp control push ran at ${RTMP_SPEED:-0}x (< 0.9x) — runner/encoder problem, cannot evaluate TLS" >&2
+    exit 1
+fi
+echo "  ✓ rtmp control: ${RTMP_SPEED}x"
+
+RTMPS_SPEED="$(smoke_push rtmps://127.0.0.1:13936/smoke || echo 0)"
+if ! awk "BEGIN{exit !($RTMPS_SPEED >= 0.9)}"; then
+    echo "✗ rtmps push ran at ${RTMPS_SPEED:-0}x (< 0.9x) — TLS write path is stalling; refusing to ship" >&2
+    exit 1
+fi
+echo "  ✓ rtmps throughput: ${RTMPS_SPEED}x"
+
+kill $MEDIAMTX_PID 2>/dev/null || true
+trap - EXIT
+
 # ---- stage ------------------------------------------------------------------
 echo "▶ staging to $OUT_DIR"
 rm -rf "$OUT_DIR"

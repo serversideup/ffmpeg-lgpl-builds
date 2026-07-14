@@ -52,6 +52,12 @@ jobs:
           echo "build_number=${build}" >> "$GITHUB_OUTPUT"
           echo "tag=v${version}-${build}" >> "$GITHUB_OUTPUT"
 
+      # pkg-config: how FFmpeg's configure discovers the static OpenSSL
+      # (--enable-openssl). Usually preinstalled on macOS runner images, but
+      # the build aborts confusingly without it, so ensure it explicitly.
+      - name: install pkg-config
+        run: brew list pkg-config >/dev/null 2>&1 || brew install pkg-config
+
       - name: install nasm (x86_64 cross-build only)
         if: matrix.target == 'x86_64-apple-darwin'
         run: brew install nasm
@@ -172,6 +178,7 @@ jobs:
           apt-get update
           apt-get install -y --no-install-recommends \
             build-essential git curl ca-certificates pkg-config xz-utils \
+            openssl \
             libgnutls28-dev libopenh264-dev ${{ matrix.extra_apt }}
 
       - name: build
