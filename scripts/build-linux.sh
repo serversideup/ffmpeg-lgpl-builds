@@ -92,6 +92,7 @@ FFMPEG_VERSION="$(tr -d '[:space:]' < "$REPO_ROOT/VERSION")"
 # Defense-in-depth: VERSION drives the URL, but the source SHA256 is pinned.
 # Bumping VERSION without updating this table aborts the build.
 case "$FFMPEG_VERSION" in
+    8.1.2) SHA256="464beb5e7bf0c311e68b45ae2f04e9cc2af88851abb4082231742a74d97b524c" ;;
     8.1.1) SHA256="b6863adde98898f42602017462871b5f6333e65aec803fdd7a6308639c52edf3" ;;
     *)
         echo "✗ no pinned SHA256 for FFmpeg $FFMPEG_VERSION in scripts/build-linux.sh" >&2

@@ -38,7 +38,7 @@ A consumer that bundles one of these binaries into a closed-source product still
 
 A release is cut whenever `VERSION` or the build script changes on `main` (or via manual `workflow_dispatch` for a one-off rebuild). The GitHub Actions workflow at `.github/workflows/build.yml` runs the platform-specific build script for every supported target, uploads the resulting binaries as a tagged release, and writes a `RELEASE-NOTES.md` recording the SHA256 of each artifact.
 
-Tag format: `v<ffmpeg-version>-<run-number>`, e.g. `v8.1.1-42`, where `<run-number>` is the GitHub Actions workflow run number (monotonic, so every push or dispatch produces a fresh distinct tag — no counter file to keep in sync).
+Tag format: `v<ffmpeg-version>-<run-number>`, e.g. `v8.1.2-42`, where `<run-number>` is the GitHub Actions workflow run number (monotonic, so every push or dispatch produces a fresh distinct tag — no counter file to keep in sync).
 
 Per release, per target, the published artifacts are:
 
@@ -66,7 +66,7 @@ Currently supported targets:
 
 ## How to bump only the build flags
 
-Edit `scripts/build-macos.sh` or `scripts/build-windows.sh` and merge to `main`. The push triggers a new release with the same `VERSION` and the next run number, e.g. `v8.1.1-43`. Release notes call out the flag delta.
+Edit `scripts/build-macos.sh` or `scripts/build-windows.sh` and merge to `main`. The push triggers a new release with the same `VERSION` and the next run number, e.g. `v8.1.2-43`. Release notes call out the flag delta.
 
 ## How to trigger an ad-hoc rebuild
 
@@ -74,29 +74,29 @@ Run the workflow manually from the Actions tab (`workflow_dispatch`). Produces a
 
 ## How to verify a release independently
 
-Given a macOS artifact `ffmpeg-8.1.1-aarch64-apple-darwin.tar.gz`:
+Given a macOS artifact `ffmpeg-8.1.2-aarch64-apple-darwin.tar.gz`:
 
 ```bash
 # Confirm the SHA256 matches the published .sha256
-shasum -a 256 -c ffmpeg-8.1.1-aarch64-apple-darwin.tar.gz.sha256
+shasum -a 256 -c ffmpeg-8.1.2-aarch64-apple-darwin.tar.gz.sha256
 
 # Confirm LGPL flags in the binary itself (ffprobe came from the same configure
 # pass, so checking ffmpeg covers both)
-tar -xzf ffmpeg-8.1.1-aarch64-apple-darwin.tar.gz
+tar -xzf ffmpeg-8.1.2-aarch64-apple-darwin.tar.gz
 ./ffmpeg -version | grep configuration | tr ' ' '\n' | grep -E '^--' | sort
 
 # Should NOT contain: --enable-gpl, --enable-nonfree, --enable-version3
 # Should contain: --disable-gpl, --disable-nonfree, --disable-version3
 ```
 
-Given a Windows artifact `ffmpeg-8.1.1-x86_64-pc-windows-msvc.tar.gz` (verify from PowerShell, cmd, or an MSYS2 shell):
+Given a Windows artifact `ffmpeg-8.1.2-x86_64-pc-windows-msvc.tar.gz` (verify from PowerShell, cmd, or an MSYS2 shell):
 
 ```powershell
 # Confirm the SHA256 matches the published .sha256
-Get-FileHash -Algorithm SHA256 ffmpeg-8.1.1-x86_64-pc-windows-msvc.tar.gz
+Get-FileHash -Algorithm SHA256 ffmpeg-8.1.2-x86_64-pc-windows-msvc.tar.gz
 
 # Confirm LGPL flags + expected hardware encoders
-tar -xzf ffmpeg-8.1.1-x86_64-pc-windows-msvc.tar.gz
+tar -xzf ffmpeg-8.1.2-x86_64-pc-windows-msvc.tar.gz
 .\ffmpeg.exe -version
 .\ffmpeg.exe -hide_banner -encoders | Select-String 'nvenc|qsv|amf|aac'
 

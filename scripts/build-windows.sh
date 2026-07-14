@@ -90,6 +90,7 @@ FFMPEG_VERSION="$(tr -d '[:space:]' < "$REPO_ROOT/VERSION")"
 # Defence-in-depth: pinned tarball SHA256, mirrored from scripts/build-macos.sh.
 # Bumping VERSION without adding a branch here aborts the build.
 case "$FFMPEG_VERSION" in
+    8.1.2) SHA256="464beb5e7bf0c311e68b45ae2f04e9cc2af88851abb4082231742a74d97b524c" ;;
     8.1.1) SHA256="b6863adde98898f42602017462871b5f6333e65aec803fdd7a6308639c52edf3" ;;
     *)
         echo "✗ no pinned SHA256 for FFmpeg $FFMPEG_VERSION in scripts/build-windows.sh" >&2
@@ -124,7 +125,7 @@ done
 
 # Pin nv-codec-headers (the NVENC/NVDEC API stubs) from source rather than using
 # MSYS2's latest. The header version sets the MINIMUM NVIDIA driver NVENC accepts
-# at runtime. FFmpeg 8.1.1's configure accepts a cascade of header versions, each
+# at runtime. FFmpeg 8.1.x's configure accepts a cascade of header versions, each
 # mapping to a driver floor (Windows):
 #     >= 12.1.14.0              → 531.61   ~Mar 2023
 #     >= 12.0.16.1  && < 12.1   → 522.25   ~Oct 2022
